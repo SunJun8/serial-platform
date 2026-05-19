@@ -1,0 +1,10 @@
+/bin/
+/dist/
+/data/
+/.agent-data/
+/.server-data/
+*.log
+*.rlog
+node_modules/
+web/dist/
+coverage.out
