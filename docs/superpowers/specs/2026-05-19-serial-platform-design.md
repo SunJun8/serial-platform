@@ -103,9 +103,9 @@ sudo ./install-agent.sh --server ws://central:8080 --data-dir /var/lib/serial-ag
 4. 创建 systemd unit。
 5. 执行 `systemctl daemon-reload`。
 6. 执行 `systemctl enable --now ...`。
-7. 安装或刷新必要的 udev 基础规则。
+7. 检查 systemd、udev、串口权限等运行前提，并给出明确错误。
 
-运行期 host-agent 负责根据 central-server 下发配置生成和刷新本机 udev rules。
+安装脚本不生成、不刷新 channel 级 udev rules。运行期 host-agent 负责根据 central-server 下发配置生成和刷新本机 udev rules，并执行 `udevadm control --reload-rules` 和必要的 `udevadm trigger`。
 
 ## 拓扑和 channel 模型
 
