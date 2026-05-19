@@ -68,3 +68,70 @@ func TestDBCreatesAgentAndChannel(t *testing.T) {
 		t.Fatalf("IDPath = %q, want %q", channels[0].IDPath, channel.IDPath)
 	}
 }
+
+func TestDBListsOverlappingLogSegments(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "meta.db"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	base := time.Unix(1700000000, 0).UTC()
+	segments := []LogSegment{
+		{
+			ChannelID:  "channel-1",
+			Path:       "channel-1/old.rlog",
+			StartTime:  base,
+			EndTime:    base.Add(10 * time.Minute),
+			SizeBytes:  100,
+			FrameCount: 1,
+			Status:     LogSegmentStatusClosed,
+		},
+		{
+			ChannelID:  "channel-1",
+			Path:       "channel-1/second.rlog",
+			StartTime:  base.Add(45 * time.Minute),
+			EndTime:    base.Add(60 * time.Minute),
+			SizeBytes:  200,
+			FrameCount: 2,
+			Status:     LogSegmentStatusClosed,
+		},
+		{
+			ChannelID:  "channel-1",
+			Path:       "channel-1/first.rlog",
+			StartTime:  base.Add(30 * time.Minute),
+			EndTime:    base.Add(40 * time.Minute),
+			SizeBytes:  300,
+			FrameCount: 3,
+			Status:     LogSegmentStatusActive,
+		},
+		{
+			ChannelID:  "channel-2",
+			Path:       "channel-2/matching-time.rlog",
+			StartTime:  base.Add(35 * time.Minute),
+			EndTime:    base.Add(50 * time.Minute),
+			SizeBytes:  400,
+			FrameCount: 4,
+			Status:     LogSegmentStatusClosed,
+		},
+	}
+	for _, segment := range segments {
+		if err := db.InsertLogSegment(segment); err != nil {
+			t.Fatalf("InsertLogSegment returned error: %v", err)
+		}
+	}
+
+	got, err := db.ListLogSegments("channel-1", base.Add(35*time.Minute), base.Add(50*time.Minute))
+	if err != nil {
+		t.Fatalf("ListLogSegments returned error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len(got) = %d, want 2", len(got))
+	}
+	if got[0].Path != "channel-1/first.rlog" || got[1].Path != "channel-1/second.rlog" {
+		t.Fatalf("paths = [%q, %q], want start_time order", got[0].Path, got[1].Path)
+	}
+	if got[0].Status != LogSegmentStatusActive {
+		t.Fatalf("Status = %q, want %q", got[0].Status, LogSegmentStatusActive)
+	}
+}

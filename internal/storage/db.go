@@ -125,3 +125,52 @@ func (db *DB) ListChannels() ([]Channel, error) {
 	}
 	return out, rows.Err()
 }
+
+func (db *DB) InsertLogSegment(segment LogSegment) error {
+	_, err := db.sql.Exec(`
+INSERT INTO log_segments (
+  channel_id, path, start_time, end_time, size_bytes, frame_count, status
+) VALUES (?, ?, ?, ?, ?, ?, ?)
+`, segment.ChannelID, segment.Path, segment.StartTime.Format(time.RFC3339Nano),
+		segment.EndTime.Format(time.RFC3339Nano), segment.SizeBytes, segment.FrameCount,
+		string(segment.Status))
+	return err
+}
+
+func (db *DB) ListLogSegments(channelID string, start, end time.Time) ([]LogSegment, error) {
+	rows, err := db.sql.Query(`
+SELECT id, channel_id, path, start_time, end_time, size_bytes, frame_count, status
+FROM log_segments
+WHERE channel_id = ?
+  AND start_time <= ?
+  AND end_time >= ?
+ORDER BY start_time
+`, channelID, end.Format(time.RFC3339Nano), start.Format(time.RFC3339Nano))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []LogSegment
+	for rows.Next() {
+		var segment LogSegment
+		var status string
+		var startText string
+		var endText string
+		if err := rows.Scan(&segment.ID, &segment.ChannelID, &segment.Path, &startText, &endText,
+			&segment.SizeBytes, &segment.FrameCount, &status); err != nil {
+			return nil, err
+		}
+		segment.StartTime, err = time.Parse(time.RFC3339Nano, startText)
+		if err != nil {
+			return nil, err
+		}
+		segment.EndTime, err = time.Parse(time.RFC3339Nano, endText)
+		if err != nil {
+			return nil, err
+		}
+		segment.Status = LogSegmentStatus(status)
+		out = append(out, segment)
+	}
+	return out, rows.Err()
+}

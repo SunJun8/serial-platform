@@ -19,6 +19,13 @@ const (
 	ChannelStatusDisabled ChannelStatus = "disabled"
 )
 
+type LogSegmentStatus string
+
+const (
+	LogSegmentStatusActive LogSegmentStatus = "active"
+	LogSegmentStatusClosed LogSegmentStatus = "closed"
+)
+
 type Agent struct {
 	ID        string
 	Name      string
@@ -46,4 +53,15 @@ type Channel struct {
 	DefaultParity   string
 	DefaultStopBits int
 	UpdatedAt       time.Time
+}
+
+type LogSegment struct {
+	ID         int64
+	ChannelID  string
+	Path       string
+	StartTime  time.Time
+	EndTime    time.Time
+	SizeBytes  int64
+	FrameCount int64
+	Status     LogSegmentStatus
 }
