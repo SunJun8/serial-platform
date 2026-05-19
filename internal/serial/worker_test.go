@@ -71,6 +71,67 @@ func TestWorkerRecordsTXWrites(t *testing.T) {
 	}
 }
 
+func TestClosedSessionCannotWrite(t *testing.T) {
+	backend := NewFakeBackend()
+	worker := NewWorker("channel-1", DefaultConfig(), backend)
+	session, err := worker.OpenControlSession(context.Background(), "owner")
+	if err != nil {
+		t.Fatalf("OpenControlSession returned error: %v", err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+	if err := session.Write([]byte("AT\r\n")); err == nil {
+		t.Fatal("Write on closed session returned nil error")
+	}
+
+	select {
+	case event := <-worker.Events():
+		t.Fatalf("unexpected TX event after closed session write: %+v", event)
+	default:
+	}
+}
+
+func TestOldSessionCannotWriteAfterNewSessionOpens(t *testing.T) {
+	backend := NewFakeBackend()
+	worker := NewWorker("channel-1", DefaultConfig(), backend)
+	first, err := worker.OpenControlSession(context.Background(), "first")
+	if err != nil {
+		t.Fatalf("OpenControlSession first returned error: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close first returned error: %v", err)
+	}
+	second, err := worker.OpenControlSession(context.Background(), "second")
+	if err != nil {
+		t.Fatalf("OpenControlSession second returned error: %v", err)
+	}
+
+	if err := first.Write([]byte("stale\r\n")); err == nil {
+		t.Fatal("Write on old session returned nil error")
+	}
+	if err := second.Write([]byte("AT\r\n")); err != nil {
+		t.Fatalf("Write on current session returned error: %v", err)
+	}
+
+	select {
+	case event := <-worker.Events():
+		if event.Direction != DirectionTX {
+			t.Fatalf("Direction = %v", event.Direction)
+		}
+		if string(event.Data) != "AT\r\n" {
+			t.Fatalf("Data = %q", string(event.Data))
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for TX event")
+	}
+	select {
+	case event := <-worker.Events():
+		t.Fatalf("unexpected extra TX event: %+v", event)
+	default:
+	}
+}
+
 func TestWorkerEmitsRXFromBackend(t *testing.T) {
 	backend := NewFakeBackend()
 	worker := NewWorker("channel-1", DefaultConfig(), backend)

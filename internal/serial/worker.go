@@ -9,6 +9,8 @@ import (
 )
 
 var ErrControlSessionBusy = errors.New("serial control session already open")
+var ErrControlSessionClosed = errors.New("serial control session is closed")
+var ErrControlSessionStale = errors.New("serial control session is not current")
 
 type Worker struct {
 	channelID     string
@@ -19,6 +21,8 @@ type Worker struct {
 	mu          sync.Mutex
 	sessionOpen bool
 	owner       string
+	sessionID   uint64
+	nextID      uint64
 }
 
 func NewWorker(channelID string, defaultConfig Config, backend Backend) *Worker {
@@ -42,9 +46,11 @@ func (w *Worker) OpenControlSession(ctx context.Context, owner string) (ControlS
 	if w.sessionOpen {
 		return nil, ErrControlSessionBusy
 	}
+	w.nextID++
 	w.sessionOpen = true
 	w.owner = owner
-	return &workerSession{worker: w, owner: owner}, nil
+	w.sessionID = w.nextID
+	return &workerSession{worker: w, owner: owner, id: w.sessionID}, nil
 }
 
 func (w *Worker) Events() <-chan Event {
@@ -92,10 +98,14 @@ func (w *Worker) emit(direction Direction, data []byte) {
 type workerSession struct {
 	worker *Worker
 	owner  string
+	id     uint64
 	closed bool
 }
 
 func (s *workerSession) Write(data []byte) error {
+	if err := s.checkValid(); err != nil {
+		return err
+	}
 	n, err := s.worker.backend.Write(data)
 	if err != nil {
 		return err
@@ -108,18 +118,30 @@ func (s *workerSession) Write(data []byte) error {
 }
 
 func (s *workerSession) SetConfig(config Config) error {
+	if err := s.checkValid(); err != nil {
+		return err
+	}
 	return s.worker.backend.ApplyConfig(config)
 }
 
 func (s *workerSession) SetDTR(value bool) error {
+	if err := s.checkValid(); err != nil {
+		return err
+	}
 	return s.worker.backend.SetDTR(value)
 }
 
 func (s *workerSession) SetRTS(value bool) error {
+	if err := s.checkValid(); err != nil {
+		return err
+	}
 	return s.worker.backend.SetRTS(value)
 }
 
 func (s *workerSession) SendBreak(duration time.Duration) error {
+	if err := s.checkValid(); err != nil {
+		return err
+	}
 	return s.worker.backend.SendBreak(duration)
 }
 
@@ -130,8 +152,23 @@ func (s *workerSession) Close() error {
 		return nil
 	}
 	s.closed = true
-	s.worker.sessionOpen = false
-	s.worker.owner = ""
+	if s.worker.sessionOpen && s.worker.owner == s.owner && s.worker.sessionID == s.id {
+		s.worker.sessionOpen = false
+		s.worker.owner = ""
+		s.worker.sessionID = 0
+	}
 	s.worker.mu.Unlock()
 	return s.worker.backend.ApplyConfig(s.worker.defaultConfig)
+}
+
+func (s *workerSession) checkValid() error {
+	s.worker.mu.Lock()
+	defer s.worker.mu.Unlock()
+	if s.closed {
+		return ErrControlSessionClosed
+	}
+	if !s.worker.sessionOpen || s.worker.owner != s.owner || s.worker.sessionID != s.id {
+		return ErrControlSessionStale
+	}
+	return nil
 }
