@@ -5,6 +5,7 @@
 /.server-data/
 *.log
 *.rlog
+serial-platform-linux.tar.gz
 node_modules/
 web/dist/
 coverage.out
