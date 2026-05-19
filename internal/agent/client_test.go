@@ -158,3 +158,30 @@ func TestClientSendLogFramesWritesBinaryFrames(t *testing.T) {
 		t.Fatal("timeout waiting for log frame")
 	}
 }
+
+func TestClientSendLogFramesReturnsCloseErrorWhenNoFramesSent(t *testing.T) {
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ws/logs" {
+			http.NotFound(w, r)
+			return
+		}
+
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		conn.CloseNow()
+	}))
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	frames := make(chan protocol.LogFrame)
+	close(frames)
+
+	client := &agent.Client{Config: agent.Config{ServerURL: httpSrv.URL}}
+	if err := client.SendLogFrames(ctx, frames); err == nil {
+		t.Fatal("SendLogFrames returned nil error, want close error")
+	}
+}

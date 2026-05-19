@@ -84,6 +84,20 @@ func TestDecodeLogFrameRejectsInvalidDirection(t *testing.T) {
 	}
 }
 
+func TestDecodeLogFrameRejectsEmptyChannelID(t *testing.T) {
+	frame := validEncodedLogFrame(t)
+	channelLen := int(frame[7])
+	copy(frame[32:], frame[32+channelLen:])
+	frame = frame[:len(frame)-channelLen]
+	frame[6] = 0
+	frame[7] = 0
+
+	_, err := DecodeLogFrame(frame)
+	if err == nil {
+		t.Fatal("DecodeLogFrame returned nil error for empty channel ID")
+	}
+}
+
 func TestDecodeLogFrameRejectsLengthMismatch(t *testing.T) {
 	frame := validEncodedLogFrame(t)
 	frame = frame[:len(frame)-1]

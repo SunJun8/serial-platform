@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"bytes"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -9,6 +10,67 @@ import (
 
 	"serial-platform/internal/protocol"
 )
+
+func TestNewSegmentWriterRejectsInvalidChannelIDs(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "logs")
+	absoluteChannel := filepath.Join(parent, "absolute-channel")
+
+	tests := []struct {
+		name        string
+		channelID   string
+		outsidePath string
+	}{
+		{name: "empty", channelID: ""},
+		{name: "parent traversal", channelID: "../x", outsidePath: filepath.Join(parent, "x")},
+		{name: "path separator", channelID: "a/b"},
+		{name: "dotdot", channelID: "..", outsidePath: parent},
+		{name: "absolute", channelID: absoluteChannel, outsidePath: absoluteChannel},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			writer, err := NewSegmentWriter(root, tt.channelID, 1024*1024)
+			if err == nil {
+				if writer != nil {
+					_, _ = writer.Close()
+				}
+				t.Errorf("NewSegmentWriter accepted invalid channel ID %q", tt.channelID)
+			}
+			if tt.outsidePath != "" && tt.outsidePath != parent {
+				if _, statErr := os.Stat(tt.outsidePath); !os.IsNotExist(statErr) {
+					t.Errorf("outside path %q exists after rejecting channel ID %q", tt.outsidePath, tt.channelID)
+				}
+			}
+		})
+	}
+}
+
+func TestNewSegmentWriterCreatesUniqueRelativePaths(t *testing.T) {
+	dir := t.TempDir()
+
+	first, err := NewSegmentWriter(dir, "channel-1", 1024*1024)
+	if err != nil {
+		t.Fatalf("first NewSegmentWriter returned error: %v", err)
+	}
+	firstInfo, err := first.Close()
+	if err != nil {
+		t.Fatalf("first Close returned error: %v", err)
+	}
+
+	second, err := NewSegmentWriter(dir, "channel-1", 1024*1024)
+	if err != nil {
+		t.Fatalf("second NewSegmentWriter returned error: %v", err)
+	}
+	secondInfo, err := second.Close()
+	if err != nil {
+		t.Fatalf("second Close returned error: %v", err)
+	}
+
+	if firstInfo.RelativePath == secondInfo.RelativePath {
+		t.Fatalf("RelativePath collision: both writers used %q", firstInfo.RelativePath)
+	}
+}
 
 func TestSegmentWriterWritesAndExportsText(t *testing.T) {
 	dir := t.TempDir()

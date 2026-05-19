@@ -82,6 +82,9 @@ func DecodeLogFrame(in []byte) (LogFrame, error) {
 	}
 
 	channelLen := int(binary.BigEndian.Uint16(in[6:8]))
+	if channelLen == 0 {
+		return LogFrame{}, errors.New("channel id is required")
+	}
 	payloadLen := int(binary.BigEndian.Uint32(in[28:32]))
 	if len(in) != headerLen+channelLen+payloadLen {
 		return LogFrame{}, errors.New("log frame length mismatch")

@@ -3,9 +3,11 @@ package logstore
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"serial-platform/internal/protocol"
@@ -33,13 +35,17 @@ type SegmentWriter struct {
 }
 
 func NewSegmentWriter(root, channelID string, maxBytes int64) (*SegmentWriter, error) {
-	now := time.Now().UTC()
-	rel := filepath.Join(channelID, now.Format("2006"), now.Format("01"), now.Format("02"), now.Format("15"), "segment-000001.rlog")
-	abs := filepath.Join(root, rel)
-	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+	if err := validateChannelID(channelID); err != nil {
 		return nil, err
 	}
-	file, err := os.OpenFile(abs, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+
+	now := time.Now().UTC()
+	dirRel := filepath.Join(channelID, now.Format("2006"), now.Format("01"), now.Format("02"), now.Format("15"))
+	dirAbs := filepath.Join(root, dirRel)
+	if err := os.MkdirAll(dirAbs, 0o755); err != nil {
+		return nil, err
+	}
+	rel, file, err := createSegmentFile(dirRel, dirAbs, now)
 	if err != nil {
 		return nil, err
 	}
@@ -50,6 +56,39 @@ func NewSegmentWriter(root, channelID string, maxBytes int64) (*SegmentWriter, e
 		file:      file,
 		relPath:   rel,
 	}, nil
+}
+
+func validateChannelID(channelID string) error {
+	if channelID == "" {
+		return errors.New("channel id is required")
+	}
+	if filepath.IsAbs(channelID) || strings.Contains(channelID, "..") {
+		return fmt.Errorf("invalid channel id %q", channelID)
+	}
+	for _, ch := range channelID {
+		if ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '.' || ch == '_' || ch == '-' {
+			continue
+		}
+		return fmt.Errorf("invalid channel id %q", channelID)
+	}
+	return nil
+}
+
+func createSegmentFile(dirRel, dirAbs string, now time.Time) (string, *os.File, error) {
+	for attempt := 0; attempt < 1000; attempt++ {
+		name := fmt.Sprintf("segment-%d-%03d.rlog", now.UnixNano(), attempt)
+		rel := filepath.Join(dirRel, name)
+		abs := filepath.Join(dirAbs, name)
+		file, err := os.OpenFile(abs, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err == nil {
+			return rel, file, nil
+		}
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		return "", nil, err
+	}
+	return "", nil, errors.New("could not create unique segment file")
 }
 
 func (w *SegmentWriter) WriteFrame(frame protocol.LogFrame) error {

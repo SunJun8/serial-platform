@@ -32,11 +32,7 @@ func TestLogWebSocketAcceptsBinaryFrame(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	wsURL := "ws" + strings.TrimPrefix(httpSrv.URL, "http") + "/ws/logs"
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		t.Fatalf("Dial returned error: %v", err)
-	}
+	conn := dialLogWebSocket(t, ctx, httpSrv.URL)
 
 	now := time.Now().UTC()
 	encoded, err := protocol.EncodeLogFrame(protocol.LogFrame{
@@ -73,6 +69,123 @@ func TestLogWebSocketAcceptsBinaryFrame(t *testing.T) {
 	}
 }
 
+func TestLogWebSocketRejectsInvalidChannelIDWithoutSegment(t *testing.T) {
+	tests := []struct {
+		name      string
+		channelID string
+		frame     func(t *testing.T, channelID string) []byte
+		wantClose websocket.StatusCode
+	}{
+		{
+			name:      "empty",
+			channelID: "",
+			wantClose: websocket.StatusInvalidFramePayloadData,
+			frame: func(t *testing.T, _ string) []byte {
+				t.Helper()
+				return encodedLogFrameWithEmptyChannelID(t)
+			},
+		},
+		{
+			name:      "path traversal",
+			channelID: "../x",
+			wantClose: websocket.StatusInternalError,
+			frame: func(t *testing.T, channelID string) []byte {
+				t.Helper()
+				return encodedLogFrameForChannel(t, channelID)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			db, err := storage.Open(filepath.Join(root, "meta.db"))
+			if err != nil {
+				t.Fatalf("Open returned error: %v", err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+
+			logDir := filepath.Join(root, "logs")
+			srv := server.New(server.ServerConfig{DB: db, LogDir: logDir})
+			httpSrv := httptest.NewServer(srv)
+			t.Cleanup(httpSrv.Close)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			conn := dialLogWebSocket(t, ctx, httpSrv.URL)
+			defer conn.Close(websocket.StatusNormalClosure, "")
+
+			if err := conn.Write(ctx, websocket.MessageBinary, tt.frame(t, tt.channelID)); err != nil {
+				t.Fatalf("conn.Write returned error: %v", err)
+			}
+
+			readCtx, readCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer readCancel()
+			_, _, err = conn.Read(readCtx)
+			if err == nil {
+				t.Fatal("conn.Read returned nil error, want server to reject invalid channel ID")
+			}
+			if got := websocket.CloseStatus(err); got != tt.wantClose {
+				t.Fatalf("conn.Read close status = %v, want %v", got, tt.wantClose)
+			}
+
+			segments, err := db.ListLogSegments(tt.channelID, time.Unix(0, 0), time.Now().Add(time.Hour))
+			if err != nil {
+				t.Fatalf("ListLogSegments returned error: %v", err)
+			}
+			if len(segments) != 0 {
+				t.Fatalf("len(segments) = %d, want 0", len(segments))
+			}
+		})
+	}
+}
+
+func TestLogWebSocketRejectsEmptyLogDir(t *testing.T) {
+	root := t.TempDir()
+	db, err := storage.Open(filepath.Join(root, "meta.db"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	channelID := "empty-logdir-test-channel"
+	t.Cleanup(func() { _ = os.RemoveAll(channelID) })
+
+	srv := server.New(server.ServerConfig{DB: db})
+	httpSrv := httptest.NewServer(srv)
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	conn := dialLogWebSocket(t, ctx, httpSrv.URL)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	if err := conn.Write(ctx, websocket.MessageBinary, encodedLogFrameForChannel(t, channelID)); err != nil {
+		t.Fatalf("conn.Write returned error: %v", err)
+	}
+
+	readCtx, readCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer readCancel()
+	_, _, err = conn.Read(readCtx)
+	if err == nil {
+		t.Fatal("conn.Read returned nil error, want server to reject empty LogDir")
+	}
+	if got := websocket.CloseStatus(err); got != websocket.StatusInternalError {
+		t.Fatalf("conn.Read close status = %v, want %v", got, websocket.StatusInternalError)
+	}
+
+	segments, err := db.ListLogSegments(channelID, time.Unix(0, 0), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("ListLogSegments returned error: %v", err)
+	}
+	if len(segments) != 0 {
+		t.Fatalf("len(segments) = %d, want 0", len(segments))
+	}
+	if _, err := os.Stat(channelID); !os.IsNotExist(err) {
+		t.Fatalf("relative log directory %q exists after empty LogDir rejection", channelID)
+	}
+}
+
 func waitForLogSegments(t *testing.T, db *storage.DB, channelID string, start, end time.Time) []storage.LogSegment {
 	t.Helper()
 
@@ -91,4 +204,44 @@ func waitForLogSegments(t *testing.T, db *storage.DB, channelID string, start, e
 	}
 	t.Fatal("timeout waiting for log segment metadata")
 	return nil
+}
+
+func dialLogWebSocket(t *testing.T, ctx context.Context, serverURL string) *websocket.Conn {
+	t.Helper()
+
+	wsURL := "ws" + strings.TrimPrefix(serverURL, "http") + "/ws/logs"
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	return conn
+}
+
+func encodedLogFrameForChannel(t *testing.T, channelID string) []byte {
+	t.Helper()
+
+	encoded, err := protocol.EncodeLogFrame(protocol.LogFrame{
+		ChannelID:   channelID,
+		Seq:         1,
+		TimestampNS: time.Now().UTC().UnixNano(),
+		Direction:   protocol.DirectionRX,
+		Flags:       protocol.FlagRaw,
+		Payload:     []byte("boot\n"),
+	})
+	if err != nil {
+		t.Fatalf("EncodeLogFrame returned error: %v", err)
+	}
+	return encoded
+}
+
+func encodedLogFrameWithEmptyChannelID(t *testing.T) []byte {
+	t.Helper()
+
+	encoded := encodedLogFrameForChannel(t, "channel-1")
+	channelLen := len("channel-1")
+	copy(encoded[32:], encoded[32+channelLen:])
+	encoded = encoded[:len(encoded)-channelLen]
+	encoded[6] = 0
+	encoded[7] = 0
+	return encoded
 }

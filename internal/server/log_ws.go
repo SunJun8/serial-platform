@@ -17,6 +17,10 @@ func (srv *Server) handleLogWebSocket(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	if srv.logDir == "" {
+		_ = conn.Close(websocket.StatusInternalError, "log directory is not configured")
+		return
+	}
 
 	writers := make(map[string]*logstore.SegmentWriter)
 	defer srv.closeLogWriters(conn, writers)

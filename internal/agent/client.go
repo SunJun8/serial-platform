@@ -89,18 +89,19 @@ func (client *Client) SendLogFrames(ctx context.Context, frames <-chan protocol.
 	if err != nil {
 		return err
 	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	for frame := range frames {
 		encoded, err := protocol.EncodeLogFrame(frame)
 		if err != nil {
+			_ = conn.Close(websocket.StatusNormalClosure, "")
 			return err
 		}
 		if err := conn.Write(ctx, websocket.MessageBinary, encoded); err != nil {
+			_ = conn.Close(websocket.StatusNormalClosure, "")
 			return err
 		}
 	}
-	return nil
+	return conn.Close(websocket.StatusNormalClosure, "")
 }
 
 func agentWebSocketURL(serverURL string) (string, error) {
