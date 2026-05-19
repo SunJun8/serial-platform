@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -11,6 +12,8 @@ import (
 type DB struct {
 	sql *sql.DB
 }
+
+var ErrNotFound = errors.New("not found")
 
 func Open(path string) (*DB, error) {
 	db, err := sql.Open("sqlite", path)
@@ -42,6 +45,41 @@ ON CONFLICT(id) DO UPDATE SET
   updated_at=excluded.updated_at
 `, agent.ID, agent.Name, string(agent.Status), agent.Hostname, agent.OS, agent.Arch, agent.MachineID, agent.UpdatedAt.Format(time.RFC3339Nano))
 	return err
+}
+
+func (db *DB) GetAgent(id string) (Agent, error) {
+	var agent Agent
+	var status string
+	var updated string
+	err := db.sql.QueryRow(`SELECT id, name, status, hostname, os, arch, machine_id, updated_at FROM agents WHERE id = ?`, id).
+		Scan(&agent.ID, &agent.Name, &status, &agent.Hostname, &agent.OS, &agent.Arch, &agent.MachineID, &updated)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Agent{}, ErrNotFound
+	}
+	if err != nil {
+		return Agent{}, err
+	}
+	agent.Status = AgentStatus(status)
+	agent.UpdatedAt, err = time.Parse(time.RFC3339Nano, updated)
+	if err != nil {
+		return Agent{}, err
+	}
+	return agent, nil
+}
+
+func (db *DB) UpdateAgentStatus(id string, status AgentStatus, updatedAt time.Time) (Agent, error) {
+	result, err := db.sql.Exec(`UPDATE agents SET status = ?, updated_at = ? WHERE id = ?`, string(status), updatedAt.Format(time.RFC3339Nano), id)
+	if err != nil {
+		return Agent{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return Agent{}, err
+	}
+	if affected == 0 {
+		return Agent{}, ErrNotFound
+	}
+	return db.GetAgent(id)
 }
 
 func (db *DB) ListAgents() ([]Agent, error) {

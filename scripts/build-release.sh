@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="${ROOT_DIR}/dist"
+BUILD_DIR="${ROOT_DIR}/.release-build"
 ARCHIVE="${ROOT_DIR}/serial-platform-linux.tar.gz"
 VERSION="${VERSION:-dev}"
 COMMIT="${COMMIT:-$(git -C "${ROOT_DIR}" rev-parse --short HEAD 2>/dev/null || printf unknown)}"
@@ -25,19 +26,34 @@ build_go() {
 
 cd "${ROOT_DIR}"
 
-rm -rf "${DIST_DIR}" "${ARCHIVE}"
+rm -rf "${DIST_DIR}" "${BUILD_DIR}" "${ARCHIVE}"
 mkdir -p "${DIST_DIR}"
+trap 'rm -rf "${BUILD_DIR}"' EXIT
 
 (cd web && npm ci && npm run lint && npm run build)
-rm -rf internal/server/webdist
-mkdir -p internal/server/webdist
-cp -R web/dist/. internal/server/webdist/
+mkdir -p "${BUILD_DIR}"
+tar \
+  --exclude .git \
+  --exclude bin \
+  --exclude dist \
+  --exclude .release-build \
+  --exclude web/dist \
+  --exclude web/node_modules \
+  -C "${ROOT_DIR}" \
+  -cf - . | tar -C "${BUILD_DIR}" -xf -
+rm -rf "${BUILD_DIR}/internal/server/webdist"
+mkdir -p "${BUILD_DIR}/internal/server/webdist"
+cp -R web/dist/. "${BUILD_DIR}/internal/server/webdist/"
+
+cd "${BUILD_DIR}"
 
 GOARCH=amd64 build_go amd64 "" central-server-linux-amd64 ./cmd/central-server
 GOARCH=amd64 build_go amd64 "" host-agent-linux-amd64 ./cmd/host-agent
 GOARCH=arm64 build_go arm64 "" host-agent-linux-arm64 ./cmd/host-agent
 GOARCH=arm GOARM=7 build_go arm 7 host-agent-linux-armv7 ./cmd/host-agent
 GOARCH=amd64 build_go amd64 "" serialctl-linux-amd64 ./cmd/serialctl
+
+cd "${ROOT_DIR}"
 
 cp scripts/install-central.sh "${DIST_DIR}/"
 cp scripts/install-agent.sh "${DIST_DIR}/"

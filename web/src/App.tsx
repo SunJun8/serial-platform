@@ -14,7 +14,7 @@ import {
   Settings2,
   TerminalSquare
 } from 'lucide-react';
-import { getJSON } from './api';
+import { getJSON, postJSON } from './api';
 
 type Agent = {
   ID: string;
@@ -74,6 +74,7 @@ export function App() {
   const [channels, setChannels] = useState<Channel[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [busyAgentID, setBusyAgentID] = useState<string | null>(null);
   const [query, setQuery] = useState('');
 
   async function refresh() {
@@ -96,6 +97,19 @@ export function App() {
   useEffect(() => {
     void refresh();
   }, []);
+
+  async function approveAgent(agentID: string) {
+    setBusyAgentID(agentID);
+    setError(null);
+    try {
+      const updated = await postJSON<Agent>(`/api/agents/${encodeURIComponent(agentID)}/approve`);
+      setAgents((current) => current.map((agent) => (agent.ID === updated.ID ? updated : agent)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Request failed');
+    } finally {
+      setBusyAgentID(null);
+    }
+  }
 
   const visibleChannels = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -177,7 +191,15 @@ export function App() {
 
         {error ? <div className="error-strip">API error: {error}</div> : null}
 
-        {activeView === 'hosts' ? <HostsView agents={agents} channels={channels} loading={loading} /> : null}
+        {activeView === 'hosts' ? (
+          <HostsView
+            agents={agents}
+            channels={channels}
+            loading={loading}
+            busyAgentID={busyAgentID}
+            onApproveAgent={(agentID) => void approveAgent(agentID)}
+          />
+        ) : null}
         {activeView === 'channels' ? (
           <ChannelsView channels={visibleChannels} loading={loading} query={query} />
         ) : null}
@@ -201,11 +223,15 @@ function Metric({ label, value, tone }: { label: string; value: number; tone: 'n
 function HostsView({
   agents,
   channels,
-  loading
+  loading,
+  busyAgentID,
+  onApproveAgent
 }: {
   agents: Agent[];
   channels: Channel[];
   loading: boolean;
+  busyAgentID: string | null;
+  onApproveAgent: (agentID: string) => void;
 }) {
   return (
     <section className="view">
@@ -245,7 +271,13 @@ function HostsView({
                       <td>{agent.OS} / {agent.Arch}</td>
                       <td>{formatTime(agent.UpdatedAt)}</td>
                       <td className="row-actions">
-                        <button type="button">Review</button>
+                        <button
+                          type="button"
+                          disabled={agent.Status === 'active' || busyAgentID === agent.ID}
+                          onClick={() => onApproveAgent(agent.ID)}
+                        >
+                          {agent.Status === 'active' ? 'Active' : busyAgentID === agent.ID ? 'Saving' : 'Approve'}
+                        </button>
                       </td>
                     </tr>
                   ))

@@ -3,6 +3,7 @@
 /data/
 /.agent-data/
 /.server-data/
+/.release-build/
 *.log
 *.rlog
 serial-platform-linux.tar.gz

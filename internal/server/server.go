@@ -51,6 +51,7 @@ func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (srv *Server) routes() {
 	srv.mux.HandleFunc("GET /api/agents", srv.handleListAgents)
+	srv.mux.HandleFunc("POST /api/agents/{agentID}/approve", srv.handleApproveAgent)
 	srv.mux.HandleFunc("GET /api/channels", srv.handleListChannels)
 	srv.mux.HandleFunc("GET /api/logs/download", srv.handleLogDownload)
 	srv.mux.HandleFunc("GET /ws/agent", srv.handleAgentWebSocket)

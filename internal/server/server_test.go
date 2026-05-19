@@ -80,6 +80,69 @@ func TestListAgentsAPIReturnsEmptyArray(t *testing.T) {
 	}
 }
 
+func TestApproveAgentAPIActivatesPendingAgent(t *testing.T) {
+	db, err := storage.Open(filepath.Join(t.TempDir(), "meta.db"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.UpsertAgent(storage.Agent{
+		ID:        "agent-1",
+		Name:      "node-1",
+		Status:    storage.AgentStatusPending,
+		Hostname:  "node-1",
+		OS:        "linux",
+		Arch:      "arm64",
+		MachineID: "machine-1",
+		UpdatedAt: time.Unix(100, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("UpsertAgent returned error: %v", err)
+	}
+
+	srv := server.New(server.ServerConfig{DB: db})
+	req := httptest.NewRequest(http.MethodPost, "/api/agents/agent-1/approve", nil)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var got storage.Agent
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if got.ID != "agent-1" || got.Status != storage.AgentStatusActive {
+		t.Fatalf("agent = %+v, want agent-1 active", got)
+	}
+
+	agents, err := db.ListAgents()
+	if err != nil {
+		t.Fatalf("ListAgents returned error: %v", err)
+	}
+	if agents[0].Status != storage.AgentStatusActive {
+		t.Fatalf("stored status = %q, want %q", agents[0].Status, storage.AgentStatusActive)
+	}
+}
+
+func TestApproveAgentAPIRejectsMissingAgent(t *testing.T) {
+	db, err := storage.Open(filepath.Join(t.TempDir(), "meta.db"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	srv := server.New(server.ServerConfig{DB: db})
+	req := httptest.NewRequest(http.MethodPost, "/api/agents/missing/approve", nil)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
 func TestListChannelsAPI(t *testing.T) {
 	db, err := storage.Open(filepath.Join(t.TempDir(), "meta.db"))
 	if err != nil {

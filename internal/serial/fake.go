@@ -70,6 +70,16 @@ func (b *FakeBackend) Write(data []byte) (int, error) {
 	return len(data), nil
 }
 
+func (b *FakeBackend) Writes() [][]byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := make([][]byte, 0, len(b.writes))
+	for _, write := range b.writes {
+		out = append(out, append([]byte(nil), write...))
+	}
+	return out
+}
+
 func (b *FakeBackend) Close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()

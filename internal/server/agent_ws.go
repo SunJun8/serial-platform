@@ -29,10 +29,18 @@ func (srv *Server) handleAgentWebSocket(w http.ResponseWriter, r *http.Request) 
 	}
 
 	now := time.Now().UTC()
+	status := storage.AgentStatusPending
+	existing, err := srv.db.GetAgent(hello.AgentID)
+	if err == nil && existing.Status == storage.AgentStatusActive {
+		status = storage.AgentStatusActive
+	} else if err != nil && err != storage.ErrNotFound {
+		conn.Close(websocket.StatusInternalError, err.Error())
+		return
+	}
 	if err := srv.db.UpsertAgent(storage.Agent{
 		ID:        hello.AgentID,
 		Name:      hello.Hostname,
-		Status:    storage.AgentStatusPending,
+		Status:    status,
 		Hostname:  hello.Hostname,
 		OS:        hello.OS,
 		Arch:      hello.Arch,
@@ -52,7 +60,7 @@ func (srv *Server) handleAgentWebSocket(w http.ResponseWriter, r *http.Request) 
 
 	accepted := protocol.AgentAccepted{
 		Type:   protocol.MessageAgentAccepted,
-		Status: string(storage.AgentStatusPending),
+		Status: string(status),
 	}
 	if err := protocol.WriteJSON(ctx, conn, accepted); err != nil {
 		return

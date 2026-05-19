@@ -72,6 +72,67 @@ func TestAgentHelloCreatesPendingAgent(t *testing.T) {
 	}
 }
 
+func TestAgentHelloPreservesActiveStatus(t *testing.T) {
+	db, err := storage.Open(filepath.Join(t.TempDir(), "meta.db"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.UpsertAgent(storage.Agent{
+		ID:        "agent-1",
+		Name:      "node-1",
+		Status:    storage.AgentStatusActive,
+		Hostname:  "node-1",
+		OS:        "linux",
+		Arch:      "arm64",
+		MachineID: "machine-1",
+		UpdatedAt: time.Unix(100, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("UpsertAgent returned error: %v", err)
+	}
+
+	srv := server.New(server.ServerConfig{DB: db})
+	httpSrv := httptest.NewServer(srv)
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	wsURL := "ws" + strings.TrimPrefix(httpSrv.URL, "http") + "/ws/agent"
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	if err := protocol.WriteJSON(ctx, conn, protocol.AgentHello{
+		Type:      protocol.MessageAgentHello,
+		AgentID:   "agent-1",
+		Hostname:  "node-1",
+		OS:        "linux",
+		Arch:      "arm64",
+		MachineID: "machine-1",
+	}); err != nil {
+		t.Fatalf("protocol.WriteJSON returned error: %v", err)
+	}
+
+	var accepted protocol.AgentAccepted
+	if err := protocol.ReadJSON(ctx, conn, &accepted); err != nil {
+		t.Fatalf("protocol.ReadJSON returned error: %v", err)
+	}
+	if accepted.Status != string(storage.AgentStatusActive) {
+		t.Fatalf("accepted.Status = %q, want %q", accepted.Status, storage.AgentStatusActive)
+	}
+
+	agents, err := db.ListAgents()
+	if err != nil {
+		t.Fatalf("ListAgents returned error: %v", err)
+	}
+	if agents[0].Status != storage.AgentStatusActive {
+		t.Fatalf("agent status = %q, want %q", agents[0].Status, storage.AgentStatusActive)
+	}
+}
+
 func TestAgentHelloRejectsMalformedHello(t *testing.T) {
 	tests := []struct {
 		name  string

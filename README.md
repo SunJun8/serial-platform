@@ -38,7 +38,7 @@ make build
 ## 本地运行
 
 ```bash
-./bin/central-server --data-dir .server-data --listen 127.0.0.1:8080
+./bin/central-server --data-dir .server-data --listen 127.0.0.1:8080 --rfc2217-bind 127.0.0.1
 ```
 
 打开：
@@ -102,7 +102,7 @@ serial-platform-linux.tar.gz
 在 central server 机器：
 
 ```bash
-sudo ./install-central.sh --data-dir /data/serial-platform --listen :8080
+sudo ./install-central.sh --data-dir /data/serial-platform --listen :8080 --rfc2217-bind 0.0.0.0
 ```
 
 在 host-agent 机器：

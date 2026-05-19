@@ -20,7 +20,7 @@ bash scripts/install_scripts_test.sh
 ## 2. 启动 central-server
 
 ```bash
-./bin/central-server --data-dir .server-data --listen 127.0.0.1:8080
+./bin/central-server --data-dir .server-data --listen 127.0.0.1:8080 --rfc2217-bind 127.0.0.1
 ```
 
 预期：

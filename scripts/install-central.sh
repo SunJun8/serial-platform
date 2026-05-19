@@ -3,16 +3,18 @@ set -euo pipefail
 
 DATA_DIR="/data/serial-platform"
 LISTEN=":8080"
+RFC2217_BIND="0.0.0.0"
 SERVICE_PATH="/etc/systemd/system/serial-platform-central.service"
 INSTALL_PATH="/usr/local/bin/central-server"
 
 usage() {
   cat >&2 <<USAGE
-usage: sudo ./install-central.sh [--data-dir DIR] [--listen ADDR]
+usage: sudo ./install-central.sh [--data-dir DIR] [--listen ADDR] [--rfc2217-bind HOST]
 
 Options:
-  --data-dir DIR  central data directory (default: /data/serial-platform)
-  --listen ADDR   HTTP listen address (default: :8080)
+  --data-dir DIR      central data directory (default: /data/serial-platform)
+  --listen ADDR       HTTP listen address (default: :8080)
+  --rfc2217-bind HOST RFC2217 bind host (default: 0.0.0.0)
 USAGE
 }
 
@@ -43,6 +45,11 @@ while [[ $# -gt 0 ]]; do
     --listen)
       require_value "$1" "${2:-}"
       LISTEN="$2"
+      shift 2
+      ;;
+    --rfc2217-bind)
+      require_value "$1" "${2:-}"
+      RFC2217_BIND="$2"
       shift 2
       ;;
     -h|--help)
@@ -95,7 +102,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${INSTALL_PATH} --data-dir $(unit_arg "${DATA_DIR}") --listen $(unit_arg "${LISTEN}")
+ExecStart=${INSTALL_PATH} --data-dir $(unit_arg "${DATA_DIR}") --listen $(unit_arg "${LISTEN}") --rfc2217-bind $(unit_arg "${RFC2217_BIND}")
 Restart=always
 RestartSec=2
 
