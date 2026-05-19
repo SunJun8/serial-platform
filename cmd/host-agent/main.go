@@ -64,9 +64,12 @@ func loadOrCreateAgentID(dataDir string) (string, error) {
 	path := filepath.Join(dataDir, "agent_id")
 	data, err := os.ReadFile(path)
 	if err == nil {
-		return strings.TrimSpace(string(data)), nil
+		id := strings.TrimSpace(string(data))
+		if id != "" {
+			return id, nil
+		}
 	}
-	if !os.IsNotExist(err) {
+	if err != nil && !os.IsNotExist(err) {
 		return "", err
 	}
 
