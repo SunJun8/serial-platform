@@ -40,9 +40,52 @@ type OpenTunnel struct {
 	ChannelID string      `json:"channel_id"`
 }
 
+type TerminalWrite struct {
+	Type      MessageType `json:"type"`
+	RequestID string      `json:"request_id,omitempty"`
+	Data      []byte      `json:"data"`
+}
+
+type SerialSetConfig struct {
+	Type      MessageType `json:"type"`
+	RequestID string      `json:"request_id,omitempty"`
+	Baud      int         `json:"baud"`
+	DataBits  int         `json:"data_bits"`
+	Parity    string      `json:"parity"`
+	StopBits  int         `json:"stop_bits"`
+	Flow      string      `json:"flow"`
+}
+
+type SerialSetDTR struct {
+	Type      MessageType `json:"type"`
+	RequestID string      `json:"request_id,omitempty"`
+	Value     bool        `json:"value"`
+}
+
+type SerialSetRTS struct {
+	Type      MessageType `json:"type"`
+	RequestID string      `json:"request_id,omitempty"`
+	Value     bool        `json:"value"`
+}
+
+type SerialSendBreak struct {
+	Type       MessageType `json:"type"`
+	RequestID  string      `json:"request_id,omitempty"`
+	DurationMS int         `json:"duration_ms"`
+}
+
 type OperationResult struct {
 	Type      MessageType `json:"type"`
 	RequestID string      `json:"request_id"`
 	OK        bool        `json:"ok"`
 	Error     string      `json:"error,omitempty"`
+}
+
+type LiveLogFrame struct {
+	ChannelID   string    `json:"channel_id"`
+	Seq         uint64    `json:"seq"`
+	TimestampNS int64     `json:"timestamp_ns"`
+	Direction   Direction `json:"direction"`
+	Flags       LogFlags  `json:"flags"`
+	Payload     string    `json:"payload"`
 }

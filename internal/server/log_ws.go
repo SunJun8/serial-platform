@@ -51,6 +51,7 @@ func (srv *Server) handleLogWebSocket(w http.ResponseWriter, r *http.Request) {
 			_ = conn.Close(websocket.StatusInternalError, err.Error())
 			return
 		}
+		srv.liveLog.Publish(frame)
 	}
 }
 

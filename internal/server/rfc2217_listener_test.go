@@ -3,6 +3,7 @@ package server_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"sync"
@@ -57,7 +58,7 @@ func TestRFC2217ListenerTranslatesClientBytesAndSerialRX(t *testing.T) {
 	}
 
 	cancel()
-	if err := netListener.Close(); err != nil {
+	if err := netListener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 		t.Fatalf("netListener.Close returned error: %v", err)
 	}
 	select {
