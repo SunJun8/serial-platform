@@ -79,7 +79,35 @@ func (client *Client) Close(_ context.Context) error {
 	return conn.Close(websocket.StatusNormalClosure, "")
 }
 
+func (client *Client) SendLogFrames(ctx context.Context, frames <-chan protocol.LogFrame) error {
+	wsURL, err := webSocketURL(client.Config.ServerURL, "/ws/logs")
+	if err != nil {
+		return err
+	}
+
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		return err
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	for frame := range frames {
+		encoded, err := protocol.EncodeLogFrame(frame)
+		if err != nil {
+			return err
+		}
+		if err := conn.Write(ctx, websocket.MessageBinary, encoded); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func agentWebSocketURL(serverURL string) (string, error) {
+	return webSocketURL(serverURL, "/ws/agent")
+}
+
+func webSocketURL(serverURL, path string) (string, error) {
 	parsed, err := url.Parse(serverURL)
 	if err != nil {
 		return "", err
@@ -90,7 +118,7 @@ func agentWebSocketURL(serverURL string) (string, error) {
 	case "https":
 		parsed.Scheme = "wss"
 	}
-	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/ws/agent"
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + path
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return parsed.String(), nil

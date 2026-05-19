@@ -7,11 +7,13 @@ import (
 )
 
 type ServerConfig struct {
-	DB *storage.DB
+	DB     *storage.DB
+	LogDir string
 }
 
 type Server struct {
 	db            *storage.DB
+	logDir        string
 	mux           *http.ServeMux
 	agentRegistry *agentRegistry
 }
@@ -19,6 +21,7 @@ type Server struct {
 func New(config ServerConfig) *Server {
 	srv := &Server{
 		db:            config.DB,
+		logDir:        config.LogDir,
 		mux:           http.NewServeMux(),
 		agentRegistry: newAgentRegistry(),
 	}
@@ -38,4 +41,5 @@ func (srv *Server) routes() {
 	srv.mux.HandleFunc("GET /api/agents", srv.handleListAgents)
 	srv.mux.HandleFunc("GET /api/channels", srv.handleListChannels)
 	srv.mux.HandleFunc("GET /ws/agent", srv.handleAgentWebSocket)
+	srv.mux.HandleFunc("GET /ws/logs", srv.handleLogWebSocket)
 }

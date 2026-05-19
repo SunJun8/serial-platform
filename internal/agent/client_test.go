@@ -96,3 +96,65 @@ func TestClientConnectKeepsConnectionOpenUntilClose(t *testing.T) {
 		t.Fatalf("hello.Arch = %q, want %q", hello.Arch, runtime.GOARCH)
 	}
 }
+
+func TestClientSendLogFramesWritesBinaryFrames(t *testing.T) {
+	received := make(chan protocol.LogFrame, 1)
+
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ws/logs" {
+			http.NotFound(w, r)
+			return
+		}
+
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "")
+
+		messageType, payload, err := conn.Read(r.Context())
+		if err != nil {
+			return
+		}
+		if messageType != websocket.MessageBinary {
+			return
+		}
+		frame, err := protocol.DecodeLogFrame(payload)
+		if err != nil {
+			return
+		}
+		received <- frame
+	}))
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	frames := make(chan protocol.LogFrame, 1)
+	frames <- protocol.LogFrame{
+		ChannelID:   "channel-1",
+		Seq:         1,
+		TimestampNS: time.Unix(1700000000, 0).UnixNano(),
+		Direction:   protocol.DirectionRX,
+		Flags:       protocol.FlagRaw,
+		Payload:     []byte("boot\n"),
+	}
+	close(frames)
+
+	client := &agent.Client{Config: agent.Config{ServerURL: httpSrv.URL}}
+	if err := client.SendLogFrames(ctx, frames); err != nil {
+		t.Fatalf("SendLogFrames returned error: %v", err)
+	}
+
+	select {
+	case frame := <-received:
+		if frame.ChannelID != "channel-1" {
+			t.Fatalf("ChannelID = %q, want channel-1", frame.ChannelID)
+		}
+		if string(frame.Payload) != "boot\n" {
+			t.Fatalf("Payload = %q, want boot newline", frame.Payload)
+		}
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for log frame")
+	}
+}

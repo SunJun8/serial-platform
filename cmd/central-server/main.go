@@ -31,7 +31,10 @@ func main() {
 		}
 	}()
 
-	handler := server.New(server.ServerConfig{DB: db})
+	handler := server.New(server.ServerConfig{
+		DB:     db,
+		LogDir: filepath.Join(*dataDir, "logs"),
+	})
 	log.Printf("central-server %s %s %s listening on %s", buildinfo.Version, buildinfo.Commit, buildinfo.Date, *listen)
 	if err := http.ListenAndServe(*listen, handler); err != nil {
 		log.Fatalf("listen and serve: %v", err)

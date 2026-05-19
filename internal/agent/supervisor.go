@@ -4,6 +4,7 @@ import (
 	"errors"
 	"sync"
 
+	"serial-platform/internal/protocol"
 	"serial-platform/internal/serial"
 )
 
@@ -33,4 +34,19 @@ func (s *Supervisor) Channel(channelID string) (serial.SerialControl, bool) {
 
 	control, ok := s.channels[channelID]
 	return control, ok
+}
+
+func SerialEventToLogFrame(seq uint64, event serial.Event) protocol.LogFrame {
+	direction := protocol.DirectionRX
+	if event.Direction == serial.DirectionTX {
+		direction = protocol.DirectionTX
+	}
+	return protocol.LogFrame{
+		ChannelID:   event.ChannelID,
+		Seq:         seq,
+		TimestampNS: event.Timestamp.UnixNano(),
+		Direction:   direction,
+		Flags:       protocol.FlagRaw,
+		Payload:     append([]byte(nil), event.Data...),
+	}
 }
