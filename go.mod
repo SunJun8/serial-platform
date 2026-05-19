@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	go.bug.st/serial v1.6.4
 	modernc.org/sqlite v1.50.1
+	nhooyr.io/websocket v1.8.17
 )
 
 require (

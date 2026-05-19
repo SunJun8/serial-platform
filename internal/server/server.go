@@ -11,16 +11,22 @@ type ServerConfig struct {
 }
 
 type Server struct {
-	db  *storage.DB
-	mux *http.ServeMux
+	db            *storage.DB
+	mux           *http.ServeMux
+	agentRegistry *agentRegistry
 }
 
 func New(config ServerConfig) *Server {
 	srv := &Server{
-		db:  config.DB,
-		mux: http.NewServeMux(),
+		db:            config.DB,
+		mux:           http.NewServeMux(),
+		agentRegistry: newAgentRegistry(),
 	}
 	srv.routes()
+	return srv
+}
+
+func (srv *Server) Handler() http.Handler {
 	return srv
 }
 
@@ -31,4 +37,5 @@ func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (srv *Server) routes() {
 	srv.mux.HandleFunc("GET /api/agents", srv.handleListAgents)
 	srv.mux.HandleFunc("GET /api/channels", srv.handleListChannels)
+	srv.mux.HandleFunc("GET /ws/agent", srv.handleAgentWebSocket)
 }
