@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,6 +56,27 @@ func TestListAgentsAPI(t *testing.T) {
 	}
 	if got[0].ID != agent.ID || got[0].Name != agent.Name || got[0].Status != agent.Status {
 		t.Fatalf("agent = %+v, want ID %q Name %q Status %q", got[0], agent.ID, agent.Name, agent.Status)
+	}
+}
+
+func TestListAgentsAPIReturnsEmptyArray(t *testing.T) {
+	db, err := storage.Open(filepath.Join(t.TempDir(), "meta.db"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	srv := server.New(server.ServerConfig{DB: db})
+	req := httptest.NewRequest(http.MethodGet, "/api/agents", nil)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if body := strings.TrimSpace(rec.Body.String()); body != "[]" {
+		t.Fatalf("body = %q, want []", body)
 	}
 }
 
@@ -111,6 +133,27 @@ func TestListChannelsAPI(t *testing.T) {
 	}
 }
 
+func TestListChannelsAPIReturnsEmptyArray(t *testing.T) {
+	db, err := storage.Open(filepath.Join(t.TempDir(), "meta.db"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	srv := server.New(server.ServerConfig{DB: db})
+	req := httptest.NewRequest(http.MethodGet, "/api/channels", nil)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if body := strings.TrimSpace(rec.Body.String()); body != "[]" {
+		t.Fatalf("body = %q, want []", body)
+	}
+}
+
 func TestAPIErrorResponse(t *testing.T) {
 	db, err := storage.Open(filepath.Join(t.TempDir(), "meta.db"))
 	if err != nil {
@@ -140,4 +183,82 @@ func TestAPIErrorResponse(t *testing.T) {
 	if body["error"] == "" {
 		t.Fatalf("error body = %v, want non-empty error", body)
 	}
+}
+
+func TestStaticShellServesIndex(t *testing.T) {
+	srv := server.New(server.ServerConfig{})
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+		t.Fatalf("Content-Type = %q, want text/html; charset=utf-8", got)
+	}
+	if body := rec.Body.String(); body == "" || !containsAll(body, "<!doctype html>", "Serial Platform") {
+		t.Fatalf("body = %q, want embedded shell HTML", body)
+	}
+}
+
+func TestStaticShellServesIndexForFrontendRoutes(t *testing.T) {
+	srv := server.New(server.ServerConfig{})
+	req := httptest.NewRequest(http.MethodGet, "/channels", nil)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if body := rec.Body.String(); body == "" || !containsAll(body, "<!doctype html>", "Serial Platform") {
+		t.Fatalf("body = %q, want embedded shell HTML", body)
+	}
+}
+
+func TestStaticShellMissingAssetReturnsNotFound(t *testing.T) {
+	srv := server.New(server.ServerConfig{})
+	req := httptest.NewRequest(http.MethodGet, "/assets/missing.js", nil)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got == "text/html; charset=utf-8" {
+		t.Fatalf("Content-Type = %q, want non-HTML not-found response", got)
+	}
+}
+
+func TestStaticShellDoesNotOverrideAPI(t *testing.T) {
+	db, err := storage.Open(filepath.Join(t.TempDir(), "meta.db"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	srv := server.New(server.ServerConfig{DB: db})
+	req := httptest.NewRequest(http.MethodGet, "/api/agents", nil)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+}
+
+func containsAll(value string, needles ...string) bool {
+	for _, needle := range needles {
+		if !strings.Contains(value, needle) {
+			return false
+		}
+	}
+	return true
 }

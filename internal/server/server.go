@@ -57,4 +57,5 @@ func (srv *Server) routes() {
 	srv.mux.HandleFunc("GET /ws/logs", srv.handleLogWebSocket)
 	srv.mux.HandleFunc("GET /ws/terminal/{channelID}", srv.handleTerminalWebSocket)
 	srv.mux.HandleFunc("GET /ws/live-log/{channelID}", srv.handleLiveLogWebSocket)
+	srv.mountStatic()
 }

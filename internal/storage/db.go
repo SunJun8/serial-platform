@@ -51,7 +51,7 @@ func (db *DB) ListAgents() ([]Agent, error) {
 	}
 	defer rows.Close()
 
-	var out []Agent
+	out := make([]Agent, 0)
 	for rows.Next() {
 		var agent Agent
 		var status string
@@ -105,7 +105,7 @@ func (db *DB) ListChannels() ([]Channel, error) {
 	}
 	defer rows.Close()
 
-	var out []Channel
+	out := make([]Channel, 0)
 	for rows.Next() {
 		var channel Channel
 		var status string
@@ -151,7 +151,7 @@ ORDER BY start_time
 	}
 	defer rows.Close()
 
-	var out []LogSegment
+	out := make([]LogSegment, 0)
 	for rows.Next() {
 		var segment LogSegment
 		var status string
