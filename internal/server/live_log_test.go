@@ -60,6 +60,37 @@ func TestLiveLogSubscribeDropsOldestWhenFull(t *testing.T) {
 	}
 }
 
+func TestLiveLogUnsubscribeIsIdempotentAndKeepsOtherSubscribers(t *testing.T) {
+	hub := server.NewLiveLogHub()
+	frames1, unsubscribe1 := hub.Subscribe("channel-1")
+	frames2, unsubscribe2 := hub.Subscribe("channel-1")
+	defer unsubscribe2()
+
+	unsubscribe1()
+	unsubscribe1()
+
+	if _, ok := <-frames1; ok {
+		t.Fatal("frames1 is open after unsubscribe, want closed")
+	}
+
+	want := protocol.LogFrame{
+		ChannelID: "channel-1",
+		Seq:       42,
+		Direction: protocol.DirectionRX,
+		Payload:   []byte("still subscribed"),
+	}
+	hub.Publish(want)
+
+	select {
+	case got := <-frames2:
+		if got.Seq != want.Seq || string(got.Payload) != string(want.Payload) {
+			t.Fatalf("frame = %+v, want %+v", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for second subscriber frame")
+	}
+}
+
 func TestLiveLogWebSocketStreamsBase64Payload(t *testing.T) {
 	srv := server.New(server.ServerConfig{})
 	httpSrv := httptest.NewServer(srv)

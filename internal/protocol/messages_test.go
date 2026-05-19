@@ -55,6 +55,15 @@ func TestProtocolMessageStructsJSON(t *testing.T) {
 			want: `{"type":"open_tunnel","tunnel_id":"tunnel-1","channel_id":"channel-1"}`,
 		},
 		{
+			name: "terminal write data",
+			msg: TerminalWrite{
+				Type:      MessageTerminalWrite,
+				RequestID: "request-1",
+				Data:      []byte("AT\r\n"),
+			},
+			want: `{"type":"terminal_write","request_id":"request-1","data":"QVQNCg=="}`,
+		},
+		{
 			name: "operation result",
 			msg: OperationResult{
 				Type:      MessageOperationResult,

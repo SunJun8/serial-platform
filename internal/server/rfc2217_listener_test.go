@@ -164,6 +164,108 @@ func TestRFC2217ListenerEscapesSerialRXIAC(t *testing.T) {
 	}
 }
 
+func TestRFC2217ListenerRejectsBusyControlOwnerBeforeOpeningSerial(t *testing.T) {
+	netListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen returned error: %v", err)
+	}
+	control := newRFC2217FakeControl()
+	owners := server.NewControlOwner()
+	if err := owners.Acquire("channel-1", "web"); err != nil {
+		t.Fatalf("Acquire web returned error: %v", err)
+	}
+	listener := server.NewRFC2217Listener(
+		netListener,
+		"channel-1",
+		control,
+		serial.DefaultConfig(),
+		server.WithRFC2217ControlOwner(owners),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- listener.Serve(ctx)
+	}()
+
+	conn, err := net.Dial("tcp", netListener.Addr().String())
+	if err != nil {
+		t.Fatalf("net.Dial returned error: %v", err)
+	}
+	defer conn.Close()
+
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline returned error: %v", err)
+	}
+	var one [1]byte
+	if _, err := conn.Read(one[:]); err == nil {
+		t.Fatal("conn.Read returned nil error, want busy owner close")
+	}
+	if control.session.openedCount() != 0 {
+		t.Fatalf("serial session opens = %d, want 0", control.session.openedCount())
+	}
+
+	cancel()
+	select {
+	case err := <-serveErr:
+		if err != nil {
+			t.Fatalf("Serve returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Serve did not return after context cancellation")
+	}
+}
+
+func TestRFC2217ListenerReleasesControlOwnerOnClose(t *testing.T) {
+	netListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen returned error: %v", err)
+	}
+	control := newRFC2217FakeControl()
+	owners := server.NewControlOwner()
+	listener := server.NewRFC2217Listener(
+		netListener,
+		"channel-1",
+		control,
+		serial.DefaultConfig(),
+		server.WithRFC2217ControlOwner(owners),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- listener.Serve(ctx)
+	}()
+
+	conn, err := net.Dial("tcp", netListener.Addr().String())
+	if err != nil {
+		t.Fatalf("net.Dial returned error: %v", err)
+	}
+
+	control.session.waitForOpen(t)
+	if err := conn.Close(); err != nil {
+		t.Fatalf("conn.Close returned error: %v", err)
+	}
+	control.session.waitForClose(t)
+
+	if err := owners.Acquire("channel-1", "web"); err != nil {
+		t.Fatalf("Acquire web after RFC2217 close returned error: %v", err)
+	}
+	owners.Release("channel-1", "web")
+
+	cancel()
+	select {
+	case err := <-serveErr:
+		if err != nil {
+			t.Fatalf("Serve returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Serve did not return after context cancellation")
+	}
+}
+
 type rfc2217FakeControl struct {
 	session *rfc2217FakeSession
 	events  chan serial.Event
@@ -189,6 +291,7 @@ type rfc2217FakeSession struct {
 	mu        sync.Mutex
 	writes    [][]byte
 	closed    bool
+	opens     int
 	opened    chan struct{}
 	closec    chan struct{}
 	onceOpen  sync.Once
@@ -203,6 +306,9 @@ func newRFC2217FakeSession() *rfc2217FakeSession {
 }
 
 func (s *rfc2217FakeSession) markOpen() {
+	s.mu.Lock()
+	s.opens++
+	s.mu.Unlock()
 	s.onceOpen.Do(func() {
 		close(s.opened)
 	})
@@ -257,6 +363,12 @@ func (s *rfc2217FakeSession) waitForClose(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("control session was not closed")
 	}
+}
+
+func (s *rfc2217FakeSession) openedCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.opens
 }
 
 func (s *rfc2217FakeSession) waitForWrite(t *testing.T, want []byte) {

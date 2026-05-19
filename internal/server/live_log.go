@@ -40,6 +40,7 @@ func (h *LiveLogHub) Publish(frame protocol.LogFrame) {
 
 func (h *LiveLogHub) Subscribe(channelID string) (<-chan protocol.LogFrame, func()) {
 	ch := make(chan protocol.LogFrame, LiveLogSubscriberBuffer)
+	var unsubscribeOnce sync.Once
 
 	h.mu.Lock()
 	if h.subscribers[channelID] == nil {
@@ -49,16 +50,18 @@ func (h *LiveLogHub) Subscribe(channelID string) (<-chan protocol.LogFrame, func
 	h.mu.Unlock()
 
 	unsubscribe := func() {
-		h.mu.Lock()
-		defer h.mu.Unlock()
-		if h.subscribers[channelID] == nil {
-			return
-		}
-		delete(h.subscribers[channelID], ch)
-		if len(h.subscribers[channelID]) == 0 {
-			delete(h.subscribers, channelID)
-		}
-		close(ch)
+		unsubscribeOnce.Do(func() {
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			if h.subscribers[channelID] == nil {
+				return
+			}
+			delete(h.subscribers[channelID], ch)
+			if len(h.subscribers[channelID]) == 0 {
+				delete(h.subscribers, channelID)
+			}
+			close(ch)
+		})
 	}
 	return ch, unsubscribe
 }

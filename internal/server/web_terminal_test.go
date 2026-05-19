@@ -25,6 +25,11 @@ func TestControlOwnerRejectsSecondSession(t *testing.T) {
 		t.Fatal("Acquire rfc2217 returned nil error, want busy channel")
 	}
 
+	owners.Release("channel-1", "rfc2217")
+	if err := owners.Acquire("channel-1", "rfc2217"); err == nil {
+		t.Fatal("Acquire rfc2217 after wrong-owner release returned nil error, want busy channel")
+	}
+
 	owners.Release("channel-1", "web")
 
 	if err := owners.Acquire("channel-1", "rfc2217"); err != nil {
@@ -88,6 +93,7 @@ func TestTerminalWebSocketRejectsSecondSession(t *testing.T) {
 
 	first := dialTerminalWebSocket(t, ctx, httpSrv.URL, "channel-1")
 	defer first.Close(websocket.StatusNormalClosure, "")
+	writeTerminalAndExpectOK(t, ctx, first, "first-session-ready", []byte("ready\n"))
 
 	second := dialTerminalWebSocket(t, ctx, httpSrv.URL, "channel-1")
 	defer second.Close(websocket.StatusNormalClosure, "")
@@ -101,6 +107,41 @@ func TestTerminalWebSocketRejectsSecondSession(t *testing.T) {
 	}
 }
 
+func TestTerminalWebSocketUnsupportedMessageReturnsError(t *testing.T) {
+	control := newTerminalFakeControl()
+	srv := server.New(server.ServerConfig{
+		SerialResolver: func(channelID string) (serial.SerialControl, bool) {
+			return control, channelID == "channel-1"
+		},
+	})
+	httpSrv := httptest.NewServer(srv)
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	conn := dialTerminalWebSocket(t, ctx, httpSrv.URL, "channel-1")
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	if err := protocol.WriteJSON(ctx, conn, struct {
+		Type      protocol.MessageType `json:"type"`
+		RequestID string               `json:"request_id"`
+	}{
+		Type:      protocol.MessageType("terminal_unsupported"),
+		RequestID: "request-unsupported",
+	}); err != nil {
+		t.Fatalf("protocol.WriteJSON returned error: %v", err)
+	}
+
+	var result protocol.OperationResult
+	if err := protocol.ReadJSON(ctx, conn, &result); err != nil {
+		t.Fatalf("protocol.ReadJSON returned error: %v", err)
+	}
+	if result.Type != protocol.MessageOperationResult || result.RequestID != "request-unsupported" || result.OK || result.Error == "" {
+		t.Fatalf("result = %+v, want operation error for unsupported message", result)
+	}
+}
+
 func dialTerminalWebSocket(t *testing.T, ctx context.Context, serverURL, channelID string) *websocket.Conn {
 	t.Helper()
 
@@ -110,6 +151,26 @@ func dialTerminalWebSocket(t *testing.T, ctx context.Context, serverURL, channel
 		t.Fatalf("Dial returned error: %v", err)
 	}
 	return conn
+}
+
+func writeTerminalAndExpectOK(t *testing.T, ctx context.Context, conn *websocket.Conn, requestID string, data []byte) {
+	t.Helper()
+
+	if err := protocol.WriteJSON(ctx, conn, protocol.TerminalWrite{
+		Type:      protocol.MessageTerminalWrite,
+		RequestID: requestID,
+		Data:      data,
+	}); err != nil {
+		t.Fatalf("protocol.WriteJSON returned error: %v", err)
+	}
+
+	var result protocol.OperationResult
+	if err := protocol.ReadJSON(ctx, conn, &result); err != nil {
+		t.Fatalf("protocol.ReadJSON returned error: %v", err)
+	}
+	if !result.OK || result.RequestID != requestID {
+		t.Fatalf("result = %+v, want OK result for %s", result, requestID)
+	}
 }
 
 type terminalFakeControl struct {

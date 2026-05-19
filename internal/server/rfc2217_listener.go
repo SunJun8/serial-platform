@@ -13,24 +13,37 @@ import (
 
 type RFC2217Resolver func(context.Context) (serial.SerialControl, serial.Config, error)
 
+type RFC2217ListenerOption func(*RFC2217Listener)
+
 type RFC2217Listener struct {
 	listener  net.Listener
 	channelID string
 	resolver  RFC2217Resolver
+	owners    *ControlOwner
 }
 
-func NewRFC2217Listener(listener net.Listener, channelID string, control serial.SerialControl, config serial.Config) *RFC2217Listener {
+func WithRFC2217ControlOwner(owners *ControlOwner) RFC2217ListenerOption {
+	return func(l *RFC2217Listener) {
+		l.owners = owners
+	}
+}
+
+func NewRFC2217Listener(listener net.Listener, channelID string, control serial.SerialControl, config serial.Config, options ...RFC2217ListenerOption) *RFC2217Listener {
 	return NewRFC2217ListenerWithResolver(listener, channelID, func(context.Context) (serial.SerialControl, serial.Config, error) {
 		return control, config, nil
-	})
+	}, options...)
 }
 
-func NewRFC2217ListenerWithResolver(listener net.Listener, channelID string, resolver RFC2217Resolver) *RFC2217Listener {
-	return &RFC2217Listener{
+func NewRFC2217ListenerWithResolver(listener net.Listener, channelID string, resolver RFC2217Resolver, options ...RFC2217ListenerOption) *RFC2217Listener {
+	l := &RFC2217Listener{
 		listener:  listener,
 		channelID: channelID,
 		resolver:  resolver,
 	}
+	for _, option := range options {
+		option(l)
+	}
+	return l
 }
 
 func (l *RFC2217Listener) Serve(ctx context.Context) error {
@@ -63,6 +76,13 @@ func (l *RFC2217Listener) handleConn(parent context.Context, conn net.Conn) {
 		<-ctx.Done()
 		_ = conn.Close()
 	}()
+
+	if l.owners != nil {
+		if err := l.owners.Acquire(l.channelID, "rfc2217"); err != nil {
+			return
+		}
+		defer l.owners.Release(l.channelID, "rfc2217")
+	}
 
 	control, config, err := l.resolver(ctx)
 	if err != nil {
