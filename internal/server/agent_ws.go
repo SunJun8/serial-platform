@@ -23,6 +23,10 @@ func (srv *Server) handleAgentWebSocket(w http.ResponseWriter, r *http.Request) 
 	if err := protocol.ReadJSON(ctx, conn, &hello); err != nil {
 		return
 	}
+	if hello.Type != protocol.MessageAgentHello || hello.AgentID == "" {
+		conn.Close(websocket.StatusPolicyViolation, "malformed agent hello")
+		return
+	}
 
 	now := time.Now().UTC()
 	if err := srv.db.UpsertAgent(storage.Agent{
