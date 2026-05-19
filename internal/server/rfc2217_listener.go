@@ -59,6 +59,10 @@ func (l *RFC2217Listener) handleConn(parent context.Context, conn net.Conn) {
 
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
+	go func() {
+		<-ctx.Done()
+		_ = conn.Close()
+	}()
 
 	control, config, err := l.resolver(ctx)
 	if err != nil {
@@ -78,17 +82,24 @@ func (l *RFC2217Listener) handleConn(parent context.Context, conn net.Conn) {
 	}()
 
 	current := config
+	parser := rfc2217.NewParser()
 	buf := make([]byte, 4096)
 	for {
 		n, err := conn.Read(buf)
 		if n > 0 {
-			commands, data, parseErr := rfc2217.ParseClientBytes(buf[:n])
+			ops, parseErr := parser.Feed(buf[:n])
 			if parseErr != nil {
 				return
 			}
-			current, parseErr = rfc2217.Apply(session, current, commands, data)
+			response := []byte(nil)
+			current, response, parseErr = rfc2217.ApplyOperations(session, current, ops)
 			if parseErr != nil {
 				return
+			}
+			if len(response) > 0 {
+				if _, writeErr := conn.Write(response); writeErr != nil {
+					return
+				}
 			}
 		}
 		if err != nil {
@@ -113,9 +124,20 @@ func (l *RFC2217Listener) pipeSerialRX(ctx context.Context, conn net.Conn, event
 			if event.ChannelID != l.channelID || event.Direction != serial.DirectionRX || len(event.Data) == 0 {
 				continue
 			}
-			if _, err := conn.Write(event.Data); err != nil {
+			if _, err := conn.Write(escapeTelnetData(event.Data)); err != nil {
 				return
 			}
 		}
 	}
+}
+
+func escapeTelnetData(data []byte) []byte {
+	out := make([]byte, 0, len(data))
+	for _, value := range data {
+		out = append(out, value)
+		if value == rfc2217.IAC {
+			out = append(out, rfc2217.IAC)
+		}
+	}
+	return out
 }
