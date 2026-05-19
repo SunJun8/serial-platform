@@ -1,7 +1,10 @@
 package server_test
 
 import (
+	"bytes"
+	"encoding/binary"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -96,6 +99,60 @@ func TestLogDownloadTextFiltersDirectionAndLabels(t *testing.T) {
 	}
 }
 
+func TestLogDownloadTextFiltersFramesByTimeRange(t *testing.T) {
+	root := t.TempDir()
+	db, logDir := openLogDownloadDB(t, root)
+	start := time.Date(2026, 5, 19, 0, 0, 0, 0, time.UTC)
+	insertLogSegment(t, db, logDir, "channel-1",
+		protocol.LogFrame{
+			ChannelID:   "channel-1",
+			Seq:         1,
+			TimestampNS: start.UnixNano(),
+			Direction:   protocol.DirectionRX,
+			Flags:       protocol.FlagRaw,
+			Payload:     []byte("before\n"),
+		},
+		protocol.LogFrame{
+			ChannelID:   "channel-1",
+			Seq:         2,
+			TimestampNS: start.Add(time.Second).UnixNano(),
+			Direction:   protocol.DirectionRX,
+			Flags:       protocol.FlagRaw,
+			Payload:     []byte("inside\n"),
+		},
+		protocol.LogFrame{
+			ChannelID:   "channel-1",
+			Seq:         3,
+			TimestampNS: start.Add(2 * time.Second).UnixNano(),
+			Direction:   protocol.DirectionRX,
+			Flags:       protocol.FlagRaw,
+			Payload:     []byte("after\n"),
+		},
+	)
+
+	srv := server.New(server.ServerConfig{DB: db, LogDir: logDir})
+	query := url.Values{
+		"channel_id": {"channel-1"},
+		"from":       {start.Add(time.Second).Format(time.RFC3339Nano)},
+		"to":         {start.Add(time.Second).Format(time.RFC3339Nano)},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/logs/download?"+query.Encode(), nil)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	text := rec.Body.String()
+	if !strings.Contains(text, "inside") {
+		t.Fatalf("body = %q, want in-range payload", text)
+	}
+	if strings.Contains(text, "before") || strings.Contains(text, "after") {
+		t.Fatalf("body = %q, want out-of-range payloads filtered", text)
+	}
+}
+
 func TestLogDownloadRawConcatenatesSegments(t *testing.T) {
 	root := t.TempDir()
 	db, logDir := openLogDownloadDB(t, root)
@@ -143,6 +200,53 @@ func TestLogDownloadRawConcatenatesSegments(t *testing.T) {
 	want := append(append([]byte(nil), firstBytes...), secondBytes...)
 	if got := rec.Body.Bytes(); string(got) != string(want) {
 		t.Fatalf("raw bytes = %v, want %v", got, want)
+	}
+}
+
+func TestLogDownloadRawFiltersFramesByTimeRange(t *testing.T) {
+	root := t.TempDir()
+	db, logDir := openLogDownloadDB(t, root)
+	start := time.Date(2026, 5, 19, 0, 0, 0, 0, time.UTC)
+	insertLogSegment(t, db, logDir, "channel-1",
+		protocol.LogFrame{
+			ChannelID:   "channel-1",
+			Seq:         1,
+			TimestampNS: start.UnixNano(),
+			Direction:   protocol.DirectionRX,
+			Flags:       protocol.FlagRaw,
+			Payload:     []byte("before\n"),
+		},
+		protocol.LogFrame{
+			ChannelID:   "channel-1",
+			Seq:         2,
+			TimestampNS: start.Add(time.Second).UnixNano(),
+			Direction:   protocol.DirectionTX,
+			Flags:       protocol.FlagRaw,
+			Payload:     []byte("inside\n"),
+		},
+	)
+
+	srv := server.New(server.ServerConfig{DB: db, LogDir: logDir})
+	query := url.Values{
+		"channel_id": {"channel-1"},
+		"from":       {start.Add(time.Second).Format(time.RFC3339Nano)},
+		"to":         {start.Add(time.Second).Format(time.RFC3339Nano)},
+		"format":     {"raw"},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/logs/download?"+query.Encode(), nil)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	frames := decodeRawDownload(t, rec.Body.Bytes())
+	if len(frames) != 1 {
+		t.Fatalf("downloaded %d frames, want 1", len(frames))
+	}
+	if frames[0].Seq != 2 || string(frames[0].Payload) != "inside\n" {
+		t.Fatalf("downloaded frame = %+v, want only in-range frame", frames[0])
 	}
 }
 
@@ -258,4 +362,27 @@ func insertLogSegment(t *testing.T, db *storage.DB, logDir string, channelID str
 		t.Fatalf("InsertLogSegment returned error: %v", err)
 	}
 	return segment
+}
+
+func decodeRawDownload(t *testing.T, data []byte) []protocol.LogFrame {
+	t.Helper()
+
+	reader := bytes.NewReader(data)
+	var frames []protocol.LogFrame
+	for reader.Len() > 0 {
+		var lenBuf [4]byte
+		if _, err := io.ReadFull(reader, lenBuf[:]); err != nil {
+			t.Fatalf("ReadFull length returned error: %v", err)
+		}
+		payload := make([]byte, binary.BigEndian.Uint32(lenBuf[:]))
+		if _, err := io.ReadFull(reader, payload); err != nil {
+			t.Fatalf("ReadFull payload returned error: %v", err)
+		}
+		frame, err := protocol.DecodeLogFrame(payload)
+		if err != nil {
+			t.Fatalf("DecodeLogFrame returned error: %v", err)
+		}
+		frames = append(frames, frame)
+	}
+	return frames
 }

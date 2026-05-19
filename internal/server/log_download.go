@@ -3,9 +3,7 @@ package server
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -81,20 +79,19 @@ func (srv *Server) handleLogDownload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if format == "raw" {
-		files, err := openLogFiles(paths)
-		if err != nil {
+		var out bytes.Buffer
+		if err := logstore.ExportRaw(paths, logstore.ExportOptions{
+			IncludeRX: includeRX,
+			IncludeTX: includeTX,
+			From:      from,
+			To:        to,
+		}, &out); err != nil {
 			writeError(w, err)
 			return
 		}
-		defer closeLogFiles(files)
-
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.WriteHeader(http.StatusOK)
-		for _, file := range files {
-			if _, err := io.Copy(w, file); err != nil {
-				return
-			}
-		}
+		_, _ = w.Write(out.Bytes())
 		return
 	}
 
@@ -105,6 +102,8 @@ func (srv *Server) handleLogDownload(w http.ResponseWriter, r *http.Request) {
 		IncludeTimestamp: includeTimestamp,
 		IncludeDirection: includeDirection,
 		StripANSI:        stripANSI,
+		From:             from,
+		To:               to,
 	}, &out); err != nil {
 		writeError(w, err)
 		return
@@ -182,25 +181,6 @@ func (srv *Server) logSegmentPath(segmentPath string) (string, error) {
 		return "", fmt.Errorf("invalid log segment path %q", segmentPath)
 	}
 	return full, nil
-}
-
-func openLogFiles(paths []string) ([]*os.File, error) {
-	files := make([]*os.File, 0, len(paths))
-	for _, path := range paths {
-		file, err := os.Open(path)
-		if err != nil {
-			closeLogFiles(files)
-			return nil, err
-		}
-		files = append(files, file)
-	}
-	return files, nil
-}
-
-func closeLogFiles(files []*os.File) {
-	for _, file := range files {
-		_ = file.Close()
-	}
 }
 
 func writeBadRequest(w http.ResponseWriter, message string) {

@@ -2,6 +2,8 @@ package logstore
 
 import (
 	"bytes"
+	"encoding/binary"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -167,6 +169,102 @@ func TestExportTextFiltersDirections(t *testing.T) {
 	}
 }
 
+func TestExportTextFiltersFrameTimeRange(t *testing.T) {
+	dir := t.TempDir()
+	start := time.Unix(1700000000, 0).UTC()
+	segmentPath := writeTestSegment(t, dir,
+		protocol.LogFrame{
+			ChannelID:   "channel-1",
+			Seq:         1,
+			TimestampNS: start.UnixNano(),
+			Direction:   protocol.DirectionRX,
+			Flags:       protocol.FlagRaw,
+			Payload:     []byte("before\n"),
+		},
+		protocol.LogFrame{
+			ChannelID:   "channel-1",
+			Seq:         2,
+			TimestampNS: start.Add(time.Second).UnixNano(),
+			Direction:   protocol.DirectionRX,
+			Flags:       protocol.FlagRaw,
+			Payload:     []byte("inside\n"),
+		},
+		protocol.LogFrame{
+			ChannelID:   "channel-1",
+			Seq:         3,
+			TimestampNS: start.Add(2 * time.Second).UnixNano(),
+			Direction:   protocol.DirectionRX,
+			Flags:       protocol.FlagRaw,
+			Payload:     []byte("after\n"),
+		},
+	)
+
+	var out bytes.Buffer
+	if err := ExportText([]string{segmentPath}, ExportOptions{
+		IncludeRX: true,
+		IncludeTX: true,
+		From:      start.Add(time.Second),
+		To:        start.Add(time.Second),
+	}, &out); err != nil {
+		t.Fatalf("ExportText returned error: %v", err)
+	}
+	text := out.String()
+	if !strings.Contains(text, "inside") {
+		t.Fatalf("time-filtered export %q does not contain in-range payload", text)
+	}
+	if strings.Contains(text, "before") || strings.Contains(text, "after") {
+		t.Fatalf("time-filtered export %q contains out-of-range payload", text)
+	}
+}
+
+func TestExportRawFiltersFrameTimeRangeAndDirection(t *testing.T) {
+	dir := t.TempDir()
+	start := time.Unix(1700000000, 0).UTC()
+	segmentPath := writeTestSegment(t, dir,
+		protocol.LogFrame{
+			ChannelID:   "channel-1",
+			Seq:         1,
+			TimestampNS: start.UnixNano(),
+			Direction:   protocol.DirectionRX,
+			Flags:       protocol.FlagRaw,
+			Payload:     []byte("before\n"),
+		},
+		protocol.LogFrame{
+			ChannelID:   "channel-1",
+			Seq:         2,
+			TimestampNS: start.Add(time.Second).UnixNano(),
+			Direction:   protocol.DirectionTX,
+			Flags:       protocol.FlagRaw,
+			Payload:     []byte("inside tx\n"),
+		},
+		protocol.LogFrame{
+			ChannelID:   "channel-1",
+			Seq:         3,
+			TimestampNS: start.Add(time.Second).UnixNano(),
+			Direction:   protocol.DirectionRX,
+			Flags:       protocol.FlagRaw,
+			Payload:     []byte("inside rx\n"),
+		},
+	)
+
+	var out bytes.Buffer
+	if err := ExportRaw([]string{segmentPath}, ExportOptions{
+		IncludeRX: false,
+		IncludeTX: true,
+		From:      start.Add(time.Second),
+		To:        start.Add(time.Second),
+	}, &out); err != nil {
+		t.Fatalf("ExportRaw returned error: %v", err)
+	}
+	frames := decodeRawExport(t, out.Bytes())
+	if len(frames) != 1 {
+		t.Fatalf("exported %d frames, want 1", len(frames))
+	}
+	if frames[0].Seq != 2 || string(frames[0].Payload) != "inside tx\n" {
+		t.Fatalf("exported frame = %+v, want only in-range TX frame", frames[0])
+	}
+}
+
 func TestExportTextStripsANSI(t *testing.T) {
 	dir := t.TempDir()
 	segmentPath := writeTestSegment(t, dir, protocol.LogFrame{
@@ -212,4 +310,27 @@ func writeTestSegment(t *testing.T, dir string, frames ...protocol.LogFrame) str
 		t.Fatalf("Close returned error: %v", err)
 	}
 	return filepath.Join(dir, segment.RelativePath)
+}
+
+func decodeRawExport(t *testing.T, data []byte) []protocol.LogFrame {
+	t.Helper()
+
+	reader := bytes.NewReader(data)
+	var frames []protocol.LogFrame
+	for reader.Len() > 0 {
+		var lenBuf [4]byte
+		if _, err := io.ReadFull(reader, lenBuf[:]); err != nil {
+			t.Fatalf("ReadFull length returned error: %v", err)
+		}
+		payload := make([]byte, binary.BigEndian.Uint32(lenBuf[:]))
+		if _, err := io.ReadFull(reader, payload); err != nil {
+			t.Fatalf("ReadFull payload returned error: %v", err)
+		}
+		frame, err := protocol.DecodeLogFrame(payload)
+		if err != nil {
+			t.Fatalf("DecodeLogFrame returned error: %v", err)
+		}
+		frames = append(frames, frame)
+	}
+	return frames
 }
