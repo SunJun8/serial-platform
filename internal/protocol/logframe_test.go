@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"bytes"
+	"math"
 	"testing"
 	"time"
 )
@@ -90,6 +91,26 @@ func TestDecodeLogFrameRejectsLengthMismatch(t *testing.T) {
 	_, err := DecodeLogFrame(frame)
 	if err == nil {
 		t.Fatal("DecodeLogFrame returned nil error for length mismatch")
+	}
+}
+
+func TestEncodeLogFrameRejectsInvalidDirection(t *testing.T) {
+	_, err := EncodeLogFrame(LogFrame{
+		ChannelID: "channel-1",
+		Direction: Direction(3),
+	})
+	if err == nil {
+		t.Fatal("EncodeLogFrame returned nil error for invalid direction")
+	}
+}
+
+func TestEncodeLogFrameRejectsOversizedPayloadLength(t *testing.T) {
+	_, err := encodeLogFrameWithPayloadLen(LogFrame{
+		ChannelID: "channel-1",
+		Direction: DirectionRX,
+	}, math.MaxUint32+1)
+	if err == nil {
+		t.Fatal("encodeLogFrameWithPayloadLen returned nil error for oversized payload length")
 	}
 }
 

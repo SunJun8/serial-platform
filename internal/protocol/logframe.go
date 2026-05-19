@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 )
 
 const logFrameHeaderLen = 32
@@ -35,11 +36,18 @@ type LogFrame struct {
 }
 
 func EncodeLogFrame(frame LogFrame) ([]byte, error) {
+	return encodeLogFrameWithPayloadLen(frame, uint64(len(frame.Payload)))
+}
+
+func encodeLogFrameWithPayloadLen(frame LogFrame, payloadLen uint64) ([]byte, error) {
 	if frame.ChannelID == "" {
 		return nil, errors.New("channel id is required")
 	}
 	if frame.Direction != DirectionRX && frame.Direction != DirectionTX {
 		return nil, fmt.Errorf("invalid direction %d", frame.Direction)
+	}
+	if payloadLen > math.MaxUint32 {
+		return nil, errors.New("payload is too long")
 	}
 	channel := []byte(frame.ChannelID)
 	if len(channel) > 65535 {
@@ -55,7 +63,7 @@ func EncodeLogFrame(frame LogFrame) ([]byte, error) {
 	out[24] = byte(frame.Direction)
 	out[25] = 0
 	binary.BigEndian.PutUint16(out[26:28], uint16(frame.Flags))
-	binary.BigEndian.PutUint32(out[28:32], uint32(len(frame.Payload)))
+	binary.BigEndian.PutUint32(out[28:32], uint32(payloadLen))
 	copy(out[32:32+len(channel)], channel)
 	copy(out[32+len(channel):], frame.Payload)
 	return out, nil
