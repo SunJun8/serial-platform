@@ -2,6 +2,7 @@ package agent_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -96,6 +97,67 @@ func TestClientConnectKeepsConnectionOpenUntilClose(t *testing.T) {
 	}
 	if hello.Arch != runtime.GOARCH {
 		t.Fatalf("hello.Arch = %q, want %q", hello.Arch, runtime.GOARCH)
+	}
+}
+
+func TestClientFetchChannelConfigsFiltersAgentAndConvertsSerialDefaults(t *testing.T) {
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/channels" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode([]map[string]any{
+			{
+				"ID":              "channel-1",
+				"AgentID":         "agent-1",
+				"DevName":         "/dev/ttyUSB0",
+				"IDPath":          "id-path-1",
+				"IDPathTag":       "id-path-tag-1",
+				"Status":          "offline",
+				"DefaultBaud":     921600,
+				"DefaultDataBits": 7,
+				"DefaultParity":   "E",
+				"DefaultStopBits": 2,
+				"DefaultFlow":     "none",
+			},
+			{
+				"ID":              "channel-2",
+				"AgentID":         "agent-2",
+				"DevName":         "/dev/ttyUSB1",
+				"IDPath":          "id-path-2",
+				"Status":          "offline",
+				"DefaultBaud":     115200,
+				"DefaultDataBits": 8,
+				"DefaultParity":   "N",
+				"DefaultStopBits": 1,
+				"DefaultFlow":     "none",
+			},
+		}); err != nil {
+			t.Errorf("encode channels: %v", err)
+		}
+	}))
+	t.Cleanup(httpSrv.Close)
+
+	client := &agent.Client{Config: agent.Config{
+		ServerURL: httpSrv.URL,
+		AgentID:   "agent-1",
+	}}
+
+	channels, err := client.FetchChannelConfigs(context.Background())
+	if err != nil {
+		t.Fatalf("FetchChannelConfigs returned error: %v", err)
+	}
+	if len(channels) != 1 {
+		t.Fatalf("len(channels) = %d, want 1: %+v", len(channels), channels)
+	}
+	got := channels[0]
+	if got.ID != "channel-1" || got.AgentID != "agent-1" || got.DevName != "/dev/ttyUSB0" || got.IDPath != "id-path-1" || got.IDPathTag != "id-path-tag-1" || got.Status != "offline" {
+		t.Fatalf("channel = %+v, want channel-1 fields for agent-1", got)
+	}
+	wantConfig := serial.Config{Baud: 921600, DataBits: 7, Parity: "E", StopBits: 2, Flow: "none"}
+	if got.DefaultConfig != wantConfig {
+		t.Fatalf("DefaultConfig = %+v, want %+v", got.DefaultConfig, wantConfig)
 	}
 }
 
@@ -257,9 +319,75 @@ func TestRuntimeScansAndForwardsReconciledEvents(t *testing.T) {
 	}
 }
 
+func TestRuntimeReadsChannelSourceOnEachScan(t *testing.T) {
+	reconciled := make(chan struct{}, 4)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	reconciler := &runtimeFakeReconciler{done: reconciled}
+	sourceCalls := 0
+	runtime := agent.NewRuntime(agent.RuntimeConfig{
+		ScanInterval: 10 * time.Millisecond,
+		Channels: []agent.ChannelConfig{{
+			ID:            "stale-channel",
+			IDPath:        "stale-id-path",
+			DefaultConfig: serial.DefaultConfig(),
+		}},
+		ChannelSource: func(context.Context) ([]agent.ChannelConfig, error) {
+			sourceCalls++
+			if sourceCalls == 1 {
+				return []agent.ChannelConfig{{
+					ID:            "channel-1",
+					IDPath:        "id-path-1",
+					DefaultConfig: serial.DefaultConfig(),
+				}}, nil
+			}
+			config := serial.DefaultConfig()
+			config.Baud = 57600
+			return []agent.ChannelConfig{{
+				ID:            "channel-2",
+				IDPath:        "id-path-1",
+				DefaultConfig: config,
+			}}, nil
+		},
+		Discover: func(agent.DiscoveryConfig) ([]agent.DiscoveredDevice, error) {
+			return []agent.DiscoveredDevice{{DevName: "/dev/ttyUSB0", IDPath: "id-path-1", PermissionOK: true}}, nil
+		},
+		Reconciler: reconciler,
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runtime.Run(ctx)
+	}()
+
+	waitForReconciles(t, reconciled, 2)
+	cancel()
+	select {
+	case err := <-done:
+		if err != context.Canceled {
+			t.Fatalf("Run error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not stop after context cancellation")
+	}
+
+	calls := reconciler.reconciledChannelCalls()
+	if len(calls) < 2 {
+		t.Fatalf("reconcile calls = %d, want at least 2", len(calls))
+	}
+	if got := calls[0]; len(got) != 1 || got[0].ID != "channel-1" || got[0].DefaultConfig.Baud != 115200 {
+		t.Fatalf("first reconcile channels = %+v, want channel-1 at 115200", got)
+	}
+	if got := calls[1]; len(got) != 1 || got[0].ID != "channel-2" || got[0].DefaultConfig.Baud != 57600 {
+		t.Fatalf("second reconcile channels = %+v, want channel-2 at 57600", got)
+	}
+}
+
 type runtimeFakeReconciler struct {
 	mu       sync.Mutex
 	channels []agent.ChannelConfig
+	calls    [][]agent.ChannelConfig
 	devices  []agent.DiscoveredDevice
 	result   agent.ReconcileResult
 	done     chan<- struct{}
@@ -269,10 +397,32 @@ func (r *runtimeFakeReconciler) Reconcile(_ context.Context, channels []agent.Ch
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.channels = append([]agent.ChannelConfig(nil), channels...)
+	r.calls = append(r.calls, append([]agent.ChannelConfig(nil), channels...))
 	r.devices = append([]agent.DiscoveredDevice(nil), devices...)
 	select {
 	case r.done <- struct{}{}:
 	default:
 	}
 	return r.result
+}
+
+func (r *runtimeFakeReconciler) reconciledChannelCalls() [][]agent.ChannelConfig {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	calls := make([][]agent.ChannelConfig, 0, len(r.calls))
+	for _, channels := range r.calls {
+		calls = append(calls, append([]agent.ChannelConfig(nil), channels...))
+	}
+	return calls
+}
+
+func waitForReconciles(t *testing.T, reconciled <-chan struct{}, count int) {
+	t.Helper()
+	for i := 0; i < count; i++ {
+		select {
+		case <-reconciled:
+		case <-time.After(time.Second):
+			t.Fatalf("runtime reconciled %d times, want %d", i, count)
+		}
+	}
 }

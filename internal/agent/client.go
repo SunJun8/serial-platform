@@ -2,8 +2,11 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"runtime"
@@ -117,9 +120,86 @@ func (client *Client) SendLogFrames(ctx context.Context, frames <-chan protocol.
 	}
 }
 
+type channelConfigResponse struct {
+	ID              string
+	AgentID         string
+	DevName         string
+	IDPath          string
+	IDPathTag       string
+	Status          string
+	DefaultBaud     int
+	DefaultDataBits int
+	DefaultParity   string
+	DefaultStopBits int
+	DefaultFlow     string
+}
+
+func (client *Client) FetchChannelConfigs(ctx context.Context) ([]ChannelConfig, error) {
+	reqURL, err := serverHTTPURL(client.Config.ServerURL, "/api/channels")
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GET /api/channels returned %s", resp.Status)
+	}
+
+	var channels []channelConfigResponse
+	if err := json.NewDecoder(resp.Body).Decode(&channels); err != nil {
+		return nil, err
+	}
+
+	configs := make([]ChannelConfig, 0, len(channels))
+	for _, channel := range channels {
+		if channel.AgentID != client.Config.AgentID {
+			continue
+		}
+		configs = append(configs, channelConfigFromResponse(channel))
+	}
+	return configs, nil
+}
+
+func channelConfigFromResponse(channel channelConfigResponse) ChannelConfig {
+	config := serial.DefaultConfig()
+	if channel.DefaultBaud > 0 {
+		config.Baud = channel.DefaultBaud
+	}
+	if channel.DefaultDataBits > 0 {
+		config.DataBits = channel.DefaultDataBits
+	}
+	if channel.DefaultParity != "" {
+		config.Parity = channel.DefaultParity
+	}
+	if channel.DefaultStopBits > 0 {
+		config.StopBits = channel.DefaultStopBits
+	}
+	if channel.DefaultFlow != "" {
+		config.Flow = channel.DefaultFlow
+	}
+	return ChannelConfig{
+		ID:            channel.ID,
+		AgentID:       channel.AgentID,
+		DevName:       channel.DevName,
+		IDPath:        channel.IDPath,
+		IDPathTag:     channel.IDPathTag,
+		Status:        channel.Status,
+		DefaultConfig: config,
+	}
+}
+
 type RuntimeReconciler interface {
 	Reconcile(context.Context, []ChannelConfig, []DiscoveredDevice) ReconcileResult
 }
+
+type ChannelSourceFunc func(context.Context) ([]ChannelConfig, error)
 
 type DiscoverFunc func(DiscoveryConfig) ([]DiscoveredDevice, error)
 
@@ -131,6 +211,7 @@ type RuntimeConfig struct {
 	Discover      DiscoverFunc
 	Reconciler    RuntimeReconciler
 	Channels      []ChannelConfig
+	ChannelSource ChannelSourceFunc
 	ForwardEvents ForwardEventsFunc
 }
 
@@ -140,6 +221,7 @@ type Runtime struct {
 	discover      DiscoverFunc
 	reconciler    RuntimeReconciler
 	channels      []ChannelConfig
+	channelSource ChannelSourceFunc
 	forwardEvents ForwardEventsFunc
 
 	mu         sync.Mutex
@@ -165,6 +247,7 @@ func NewRuntime(config RuntimeConfig) *Runtime {
 		discover:      discover,
 		reconciler:    reconciler,
 		channels:      append([]ChannelConfig(nil), config.Channels...),
+		channelSource: config.ChannelSource,
 		forwardEvents: config.ForwardEvents,
 		forwarding:    make(map[<-chan serial.Event]struct{}),
 	}
@@ -194,11 +277,26 @@ func (runtime *Runtime) scan(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	result := runtime.reconciler.Reconcile(ctx, runtime.channels, devices)
+	channels, err := runtime.currentChannels(ctx)
+	if err != nil {
+		return err
+	}
+	result := runtime.reconciler.Reconcile(ctx, channels, devices)
 	for _, events := range result.Events {
 		runtime.startForwarding(ctx, events)
 	}
 	return nil
+}
+
+func (runtime *Runtime) currentChannels(ctx context.Context) ([]ChannelConfig, error) {
+	if runtime.channelSource == nil {
+		return append([]ChannelConfig(nil), runtime.channels...), nil
+	}
+	channels, err := runtime.channelSource(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return append([]ChannelConfig(nil), channels...), nil
 }
 
 func (runtime *Runtime) startForwarding(ctx context.Context, events <-chan serial.Event) {
@@ -228,6 +326,17 @@ func (runtime *Runtime) startForwarding(ctx context.Context, events <-chan seria
 
 func agentWebSocketURL(serverURL string) (string, error) {
 	return webSocketURL(serverURL, "/ws/agent")
+}
+
+func serverHTTPURL(serverURL, path string) (string, error) {
+	parsed, err := url.Parse(serverURL)
+	if err != nil {
+		return "", err
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + path
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String(), nil
 }
 
 func webSocketURL(serverURL, path string) (string, error) {

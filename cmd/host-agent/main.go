@@ -63,7 +63,8 @@ func main() {
 	}()
 
 	runtime := agent.NewRuntime(agent.RuntimeConfig{
-		ScanInterval: 3 * time.Second,
+		ScanInterval:  3 * time.Second,
+		ChannelSource: client.FetchChannelConfigs,
 		ForwardEvents: func(ctx context.Context, events <-chan serial.Event) error {
 			return uploader.Forward(ctx, events)
 		},
