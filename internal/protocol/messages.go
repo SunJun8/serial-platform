@@ -8,7 +8,12 @@ const (
 	MessageAgentPending    MessageType = "agent_pending"
 	MessageHeartbeat       MessageType = "heartbeat"
 	MessageChannelSnapshot MessageType = "channel_snapshot"
+	MessageDeviceSnapshot  MessageType = "device_snapshot"
+	MessageChannelStatus   MessageType = "channel_status"
+	MessageChannelSync     MessageType = "channel_sync"
 	MessageOpenTunnel      MessageType = "open_tunnel"
+	MessageTunnelOpened    MessageType = "tunnel_opened"
+	MessageTunnelError     MessageType = "tunnel_error"
 	MessageTerminalOpen    MessageType = "terminal_open"
 	MessageTerminalClose   MessageType = "terminal_close"
 	MessageTerminalWrite   MessageType = "terminal_write"
@@ -17,6 +22,13 @@ const (
 	MessageSerialSetRTS    MessageType = "serial_set_rts"
 	MessageSerialSendBreak MessageType = "serial_send_break"
 	MessageOperationResult MessageType = "operation_result"
+)
+
+type TunnelMode string
+
+const (
+	TunnelModeRFC2217  TunnelMode = "rfc2217"
+	TunnelModeTerminal TunnelMode = "terminal"
 )
 
 type AgentHello struct {
@@ -38,6 +50,73 @@ type OpenTunnel struct {
 	Type      MessageType `json:"type"`
 	TunnelID  string      `json:"tunnel_id"`
 	ChannelID string      `json:"channel_id"`
+	Mode      TunnelMode  `json:"mode"`
+}
+
+type TunnelOpened struct {
+	Type     MessageType `json:"type"`
+	TunnelID string      `json:"tunnel_id"`
+	Mode     TunnelMode  `json:"mode"`
+}
+
+type TunnelError struct {
+	Type     MessageType `json:"type"`
+	TunnelID string      `json:"tunnel_id"`
+	Error    string      `json:"error"`
+}
+
+type DeviceIdentity struct {
+	DevName      string `json:"dev_name"`
+	IDPath       string `json:"id_path"`
+	IDPathTag    string `json:"id_path_tag"`
+	SysfsDevpath string `json:"sysfs_devpath"`
+	Interface    string `json:"interface"`
+	VID          string `json:"vid"`
+	PID          string `json:"pid"`
+	Serial       string `json:"serial"`
+	Driver       string `json:"driver"`
+	Manufacturer string `json:"manufacturer"`
+	Product      string `json:"product"`
+	PermissionOK bool   `json:"permission_ok"`
+	ErrorMessage string `json:"error_message,omitempty"`
+}
+
+type DeviceSnapshot struct {
+	Type    MessageType      `json:"type"`
+	AgentID string           `json:"agent_id"`
+	Devices []DeviceIdentity `json:"devices"`
+}
+
+type ChannelConfigMessage struct {
+	ID              string `json:"id"`
+	AgentID         string `json:"agent_id"`
+	DevName         string `json:"dev_name"`
+	IDPath          string `json:"id_path"`
+	IDPathTag       string `json:"id_path_tag"`
+	Status          string `json:"status"`
+	DefaultBaud     int    `json:"default_baud"`
+	DefaultDataBits int    `json:"default_data_bits"`
+	DefaultParity   string `json:"default_parity"`
+	DefaultStopBits int    `json:"default_stop_bits"`
+	DefaultFlow     string `json:"default_flow"`
+}
+
+type ChannelSync struct {
+	Type     MessageType            `json:"type"`
+	Channels []ChannelConfigMessage `json:"channels"`
+}
+
+type ChannelRuntimeStatus struct {
+	ChannelID    string `json:"channel_id"`
+	Status       string `json:"status"`
+	DevName      string `json:"dev_name"`
+	ErrorMessage string `json:"error_message,omitempty"`
+}
+
+type ChannelStatusUpdate struct {
+	Type     MessageType            `json:"type"`
+	AgentID  string                 `json:"agent_id"`
+	Statuses []ChannelRuntimeStatus `json:"statuses"`
 }
 
 type TerminalWrite struct {

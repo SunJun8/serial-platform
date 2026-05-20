@@ -23,8 +23,9 @@ import (
 type Client struct {
 	Config Config
 
-	mu   sync.Mutex
-	conn *websocket.Conn
+	mu            sync.Mutex
+	controlSendMu sync.Mutex
+	conn          *websocket.Conn
 }
 
 func (client *Client) Connect(ctx context.Context) (string, error) {
@@ -83,6 +84,46 @@ func (client *Client) Close(_ context.Context) error {
 		return nil
 	}
 	return conn.Close(websocket.StatusNormalClosure, "")
+}
+
+func (client *Client) SendControl(ctx context.Context, value any) error {
+	conn, err := client.controlConn()
+	if err != nil {
+		return err
+	}
+	client.controlSendMu.Lock()
+	defer client.controlSendMu.Unlock()
+	return protocol.WriteJSON(ctx, conn, value)
+}
+
+func (client *Client) ReadControl(ctx context.Context) (protocol.MessageType, []byte, error) {
+	conn, err := client.controlConn()
+	if err != nil {
+		return "", nil, err
+	}
+	messageType, data, err := conn.Read(ctx)
+	if err != nil {
+		return "", nil, err
+	}
+	if messageType != websocket.MessageText {
+		return "", nil, fmt.Errorf("control websocket received %v message", messageType)
+	}
+	var envelope struct {
+		Type protocol.MessageType `json:"type"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return "", nil, err
+	}
+	return envelope.Type, data, nil
+}
+
+func (client *Client) controlConn() (*websocket.Conn, error) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if client.conn == nil {
+		return nil, errors.New("agent client not connected")
+	}
+	return client.conn, nil
 }
 
 func (client *Client) SendLogFrames(ctx context.Context, frames <-chan protocol.LogFrame) error {

@@ -101,6 +101,99 @@ func TestClientConnectKeepsConnectionOpenUntilClose(t *testing.T) {
 	}
 }
 
+func TestClientSendAndReadControlMessages(t *testing.T) {
+	receivedSnapshot := make(chan protocol.DeviceSnapshot, 1)
+
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ws/agent" {
+			http.NotFound(w, r)
+			return
+		}
+
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "")
+
+		var hello protocol.AgentHello
+		if err := protocol.ReadJSON(r.Context(), conn, &hello); err != nil {
+			return
+		}
+		if err := protocol.WriteJSON(r.Context(), conn, protocol.AgentAccepted{
+			Type:   protocol.MessageAgentAccepted,
+			Status: "active",
+		}); err != nil {
+			return
+		}
+
+		var snapshot protocol.DeviceSnapshot
+		if err := protocol.ReadJSON(r.Context(), conn, &snapshot); err != nil {
+			return
+		}
+		receivedSnapshot <- snapshot
+
+		_ = protocol.WriteJSON(r.Context(), conn, protocol.ChannelSync{
+			Type: protocol.MessageChannelSync,
+			Channels: []protocol.ChannelConfigMessage{
+				{ID: "channel-1", AgentID: hello.AgentID, IDPath: "id-path", DefaultBaud: 115200},
+			},
+		})
+	}))
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	client := &agent.Client{Config: agent.Config{
+		ServerURL: httpSrv.URL,
+		AgentID:   "agent-1",
+	}}
+	status, err := client.Connect(ctx)
+	if err != nil {
+		t.Fatalf("Connect returned error: %v", err)
+	}
+	if status != "active" {
+		t.Fatalf("status = %q, want active", status)
+	}
+	t.Cleanup(func() { _ = client.Close(context.Background()) })
+
+	err = client.SendControl(ctx, protocol.DeviceSnapshot{
+		Type:    protocol.MessageDeviceSnapshot,
+		AgentID: "agent-1",
+		Devices: []protocol.DeviceIdentity{
+			{DevName: "/dev/ttyUSB0", IDPath: "id-path"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SendControl returned error: %v", err)
+	}
+
+	select {
+	case snapshot := <-receivedSnapshot:
+		if snapshot.Type != protocol.MessageDeviceSnapshot || len(snapshot.Devices) != 1 || snapshot.Devices[0].IDPath != "id-path" {
+			t.Fatalf("snapshot = %+v", snapshot)
+		}
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for snapshot")
+	}
+
+	messageType, raw, err := client.ReadControl(ctx)
+	if err != nil {
+		t.Fatalf("ReadControl returned error: %v", err)
+	}
+	if messageType != protocol.MessageChannelSync {
+		t.Fatalf("messageType = %q, want %q", messageType, protocol.MessageChannelSync)
+	}
+	var syncMessage protocol.ChannelSync
+	if err := json.Unmarshal(raw, &syncMessage); err != nil {
+		t.Fatalf("Unmarshal raw returned error: %v", err)
+	}
+	if len(syncMessage.Channels) != 1 || syncMessage.Channels[0].ID != "channel-1" {
+		t.Fatalf("syncMessage = %+v", syncMessage)
+	}
+}
+
 func TestClientFetchChannelConfigsFiltersAgentAndConvertsSerialDefaults(t *testing.T) {
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/channels" {

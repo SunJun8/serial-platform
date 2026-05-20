@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 )
@@ -51,8 +52,9 @@ func TestProtocolMessageStructsJSON(t *testing.T) {
 				Type:      MessageOpenTunnel,
 				TunnelID:  "tunnel-1",
 				ChannelID: "channel-1",
+				Mode:      TunnelModeRFC2217,
 			},
-			want: `{"type":"open_tunnel","tunnel_id":"tunnel-1","channel_id":"channel-1"}`,
+			want: `{"type":"open_tunnel","tunnel_id":"tunnel-1","channel_id":"channel-1","mode":"rfc2217"}`,
 		},
 		{
 			name: "terminal write data",
@@ -85,5 +87,45 @@ func TestProtocolMessageStructsJSON(t *testing.T) {
 				t.Fatalf("JSON = %s, want %s", data, tt.want)
 			}
 		})
+	}
+}
+
+func TestAgentControlMessagesRoundTrip(t *testing.T) {
+	messages := []any{
+		DeviceSnapshot{
+			Type:    MessageDeviceSnapshot,
+			AgentID: "agent-1",
+			Devices: []DeviceIdentity{
+				{DevName: "/dev/ttyUSB0", IDPath: "id-path"},
+			},
+		},
+		ChannelStatusUpdate{
+			Type:    MessageChannelStatus,
+			AgentID: "agent-1",
+			Statuses: []ChannelRuntimeStatus{
+				{ChannelID: "channel-1", Status: "online", DevName: "/dev/ttyUSB0"},
+			},
+		},
+		ChannelSync{
+			Type: MessageChannelSync,
+			Channels: []ChannelConfigMessage{
+				{ID: "channel-1", IDPath: "id-path", DefaultBaud: 115200},
+			},
+		},
+		OpenTunnel{
+			Type:      MessageOpenTunnel,
+			TunnelID:  "tunnel-1",
+			ChannelID: "channel-1",
+			Mode:      TunnelModeRFC2217,
+		},
+	}
+	for _, msg := range messages {
+		data, err := json.Marshal(msg)
+		if err != nil {
+			t.Fatalf("Marshal(%T) returned error: %v", msg, err)
+		}
+		if !bytes.Contains(data, []byte(`"type"`)) {
+			t.Fatalf("Marshal(%T) = %s, want type field", msg, data)
+		}
 	}
 }

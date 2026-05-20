@@ -194,3 +194,216 @@ func TestAgentHelloRejectsMalformedHello(t *testing.T) {
 		})
 	}
 }
+
+func TestAgentWebSocketStoresCandidatesFromDeviceSnapshot(t *testing.T) {
+	db := newAgentWSTestDB(t)
+	srv := server.New(server.ServerConfig{DB: db})
+	httpSrv := httptest.NewServer(srv)
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	conn := dialAgentWS(t, ctx, httpSrv.URL)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	writeAgentHelloAndReadAccepted(t, ctx, conn, "agent-1")
+
+	err := protocol.WriteJSON(ctx, conn, protocol.DeviceSnapshot{
+		Type:    protocol.MessageDeviceSnapshot,
+		AgentID: "agent-1",
+		Devices: []protocol.DeviceIdentity{
+			{
+				DevName:      "/dev/ttyUSB0",
+				IDPath:       "id-path",
+				IDPathTag:    "id-tag",
+				PermissionOK: true,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("protocol.WriteJSON returned error: %v", err)
+	}
+
+	requireEventually(t, func() bool {
+		candidates, err := db.ListCandidates()
+		if err != nil {
+			t.Fatalf("ListCandidates returned error: %v", err)
+		}
+		return len(candidates) == 1 &&
+			candidates[0].AgentID == "agent-1" &&
+			candidates[0].DevName == "/dev/ttyUSB0" &&
+			candidates[0].IDPath == "id-path" &&
+			candidates[0].IDPathTag == "id-tag"
+	})
+}
+
+func TestAgentRegistryCanSendChannelSync(t *testing.T) {
+	db := newAgentWSTestDB(t)
+	if err := db.UpsertChannel(storage.Channel{
+		ID:              "channel-1",
+		AgentID:         "agent-1",
+		AutoName:        "agent-1.if00",
+		Alias:           "loopback",
+		Role:            "console",
+		DevName:         "/dev/ttyUSB0",
+		IDPath:          "id-path",
+		IDPathTag:       "id-tag",
+		RFC2217Port:     7001,
+		Status:          storage.ChannelStatusOffline,
+		DefaultBaud:     115200,
+		DefaultDataBits: 8,
+		DefaultParity:   "N",
+		DefaultStopBits: 1,
+		DefaultFlow:     "none",
+		UpdatedAt:       time.Unix(1700000000, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("UpsertChannel returned error: %v", err)
+	}
+	srv := server.New(server.ServerConfig{DB: db})
+	httpSrv := httptest.NewServer(srv)
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	conn := dialAgentWS(t, ctx, httpSrv.URL)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	writeAgentHelloAndReadAccepted(t, ctx, conn, "agent-1")
+
+	var syncMessage protocol.ChannelSync
+	if err := protocol.ReadJSON(ctx, conn, &syncMessage); err != nil {
+		t.Fatalf("protocol.ReadJSON returned error: %v", err)
+	}
+	if syncMessage.Type != protocol.MessageChannelSync ||
+		len(syncMessage.Channels) != 1 ||
+		syncMessage.Channels[0].ID != "channel-1" ||
+		syncMessage.Channels[0].DefaultBaud != 115200 {
+		t.Fatalf("syncMessage = %+v", syncMessage)
+	}
+}
+
+func TestAgentWebSocketUpdatesChannelStatus(t *testing.T) {
+	db := newAgentWSTestDB(t)
+	if err := db.UpsertChannel(storage.Channel{
+		ID:              "channel-1",
+		AgentID:         "agent-1",
+		AutoName:        "agent-1.if00",
+		Alias:           "loopback",
+		Role:            "console",
+		IDPath:          "id-path",
+		IDPathTag:       "id-tag",
+		RFC2217Port:     7001,
+		Status:          storage.ChannelStatusOffline,
+		DefaultBaud:     115200,
+		DefaultDataBits: 8,
+		DefaultParity:   "N",
+		DefaultStopBits: 1,
+		DefaultFlow:     "none",
+		UpdatedAt:       time.Unix(1700000000, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("UpsertChannel returned error: %v", err)
+	}
+	srv := server.New(server.ServerConfig{DB: db})
+	httpSrv := httptest.NewServer(srv)
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	conn := dialAgentWS(t, ctx, httpSrv.URL)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	writeAgentHelloAndReadAccepted(t, ctx, conn, "agent-1")
+	var initialSync protocol.ChannelSync
+	if err := protocol.ReadJSON(ctx, conn, &initialSync); err != nil {
+		t.Fatalf("initial sync ReadJSON returned error: %v", err)
+	}
+
+	if err := protocol.WriteJSON(ctx, conn, protocol.ChannelStatusUpdate{
+		Type:    protocol.MessageChannelStatus,
+		AgentID: "agent-1",
+		Statuses: []protocol.ChannelRuntimeStatus{
+			{
+				ChannelID:    "channel-1",
+				Status:       "error",
+				DevName:      "/dev/ttyUSB0",
+				ErrorMessage: "permission denied",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("protocol.WriteJSON returned error: %v", err)
+	}
+
+	requireEventually(t, func() bool {
+		channel, err := db.GetChannel("channel-1")
+		if err != nil {
+			t.Fatalf("GetChannel returned error: %v", err)
+		}
+		return channel.Status == storage.ChannelStatusError &&
+			channel.DevName == "/dev/ttyUSB0" &&
+			channel.ErrorMessage == "permission denied"
+	})
+}
+
+func newAgentWSTestDB(t *testing.T) *storage.DB {
+	t.Helper()
+	db, err := storage.Open(filepath.Join(t.TempDir(), "meta.db"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+func dialAgentWS(t *testing.T, ctx context.Context, serverURL string) *websocket.Conn {
+	t.Helper()
+	wsURL := "ws" + strings.TrimPrefix(serverURL, "http") + "/ws/agent"
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("websocket.Dial returned error: %v", err)
+	}
+	return conn
+}
+
+func writeAgentHelloAndReadAccepted(t *testing.T, ctx context.Context, conn *websocket.Conn, agentID string) protocol.AgentAccepted {
+	t.Helper()
+	if err := protocol.WriteJSON(ctx, conn, protocol.AgentHello{
+		Type:      protocol.MessageAgentHello,
+		AgentID:   agentID,
+		Hostname:  "node-1",
+		Version:   "dev",
+		OS:        "linux",
+		Arch:      "arm64",
+		MachineID: "machine-1",
+	}); err != nil {
+		t.Fatalf("protocol.WriteJSON returned error: %v", err)
+	}
+
+	var accepted protocol.AgentAccepted
+	if err := protocol.ReadJSON(ctx, conn, &accepted); err != nil {
+		t.Fatalf("protocol.ReadJSON returned error: %v", err)
+	}
+	if accepted.Type != protocol.MessageAgentAccepted {
+		t.Fatalf("accepted.Type = %q, want %q", accepted.Type, protocol.MessageAgentAccepted)
+	}
+	return accepted
+}
+
+func requireEventually(t *testing.T, condition func() bool) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if condition() {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("condition was not met before timeout")
+		case <-ticker.C:
+		}
+	}
+}
