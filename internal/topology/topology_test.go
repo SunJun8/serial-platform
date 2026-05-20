@@ -7,15 +7,21 @@ import (
 
 func TestParseUdevProperties(t *testing.T) {
 	props := ParseUdevProperties(`ID_PATH=pci-0000:00:14.0-usb-0:1.2:1.0
+DEVNAME=/dev/ttyUSB0
 ID_PATH_TAG=pci-0000_00_14_0-usb-0_1_2_1_0
 DEVPATH=/devices/pci0000:00/0000:00:14.0/usb1/1-1/1-1.2/ttyUSB0
+ID_USB_INTERFACE_NUM=00
 ID_VENDOR_ID=1a86
 ID_MODEL_ID=7523
+ID_SERIAL_SHORT=ABCD1234
 ID_USB_DRIVER=ch341
 ID_VENDOR=QinHeng_Electronics
 ID_MODEL=USB2.0-Serial
 IGNORED=value
 `)
+	if props.DevName != "/dev/ttyUSB0" {
+		t.Fatalf("DevName = %q", props.DevName)
+	}
 	if props.IDPath != "pci-0000:00:14.0-usb-0:1.2:1.0" {
 		t.Fatalf("IDPath = %q", props.IDPath)
 	}
@@ -25,8 +31,14 @@ IGNORED=value
 	if props.SysfsDevpath != "/devices/pci0000:00/0000:00:14.0/usb1/1-1/1-1.2/ttyUSB0" {
 		t.Fatalf("SysfsDevpath = %q", props.SysfsDevpath)
 	}
+	if props.Interface != "00" {
+		t.Fatalf("Interface = %q", props.Interface)
+	}
 	if props.VID != "1a86" || props.PID != "7523" {
 		t.Fatalf("VID/PID = %q/%q", props.VID, props.PID)
+	}
+	if props.Serial != "ABCD1234" {
+		t.Fatalf("Serial = %q", props.Serial)
 	}
 	if props.Driver != "ch341" {
 		t.Fatalf("Driver = %q", props.Driver)
