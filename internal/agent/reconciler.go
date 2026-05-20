@@ -231,6 +231,9 @@ func workerMatches(worker *managedWorker, channel ChannelConfig, device Discover
 	if channel.IDPath != "" && worker.idPath != device.IDPath {
 		return false
 	}
+	if worker.config != channel.DefaultConfig {
+		return false
+	}
 	return true
 }
 

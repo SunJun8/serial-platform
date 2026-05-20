@@ -106,6 +106,59 @@ func TestReconcilerResolvesRFC2217ControlFromExistingWorker(t *testing.T) {
 	backend.waitForWrite(t, []byte("AT\r"))
 }
 
+func TestReconcilerRefreshesRFC2217ControlConfigWhenDefaultConfigChanges(t *testing.T) {
+	backendFactory := newFakeBackendFactory()
+	reconciler := agent.NewReconciler(agent.ReconcilerConfig{BackendFactory: backendFactory})
+	config := serial.DefaultConfig()
+	config.Baud = 115200
+	channels := []agent.ChannelConfig{{
+		ID:            "channel-1",
+		IDPath:        "id-path-1",
+		Status:        "offline",
+		DefaultConfig: config,
+	}}
+	devices := []agent.DiscoveredDevice{{
+		DevName:      "/dev/ttyUSB0",
+		IDPath:       "id-path-1",
+		PermissionOK: true,
+	}}
+
+	result := reconciler.Reconcile(context.Background(), channels, devices)
+	if len(result.Statuses) != 1 || result.Statuses[0].Status != "online" {
+		t.Fatalf("first reconcile statuses = %+v, want one online status", result.Statuses)
+	}
+	_, gotConfig, err := reconciler.RFC2217Control(context.Background(), "channel-1")
+	if err != nil {
+		t.Fatalf("RFC2217Control after first reconcile returned error: %v", err)
+	}
+	if gotConfig.Baud != 115200 {
+		t.Fatalf("RFC2217Control baud after first reconcile = %d, want 115200", gotConfig.Baud)
+	}
+	firstBackend := backendFactory.backend("/dev/ttyUSB0")
+	if firstBackend == nil {
+		t.Fatal("backend for /dev/ttyUSB0 was not opened")
+	}
+
+	channels[0].DefaultConfig.Baud = 57600
+	result = reconciler.Reconcile(context.Background(), channels, devices)
+	if len(result.Statuses) != 1 || result.Statuses[0].Status != "online" {
+		t.Fatalf("second reconcile statuses = %+v, want one online status", result.Statuses)
+	}
+	_, gotConfig, err = reconciler.RFC2217Control(context.Background(), "channel-1")
+	if err != nil {
+		t.Fatalf("RFC2217Control after config change returned error: %v", err)
+	}
+	if gotConfig.Baud != 57600 {
+		t.Fatalf("RFC2217Control baud after config change = %d, want 57600", gotConfig.Baud)
+	}
+	if backendFactory.openedCount("/dev/ttyUSB0") != 2 {
+		t.Fatalf("opened /dev/ttyUSB0 after config change = %d, want 2", backendFactory.openedCount("/dev/ttyUSB0"))
+	}
+	if !firstBackend.waitClosed(time.Second) {
+		t.Fatal("old backend was not closed after default config changed")
+	}
+}
+
 func TestReconcilerRestartsExitedWorkerForMatchingChannel(t *testing.T) {
 	backendFactory := newFakeBackendFactory()
 	reconciler := agent.NewReconciler(agent.ReconcilerConfig{BackendFactory: backendFactory})
