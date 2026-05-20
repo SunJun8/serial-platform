@@ -266,15 +266,33 @@ func (srv *Server) handleChannelStatusUpdate(agentID string, update protocol.Cha
 		if status.ChannelID == "" {
 			continue
 		}
-		if err := srv.db.UpdateChannelStatus(
+		channelStatus := storage.ChannelStatus(status.Status)
+		if !isValidChannelStatus(channelStatus) {
+			continue
+		}
+		if err := srv.db.UpdateChannelStatusForAgent(
 			status.ChannelID,
-			storage.ChannelStatus(status.Status),
+			agentID,
+			channelStatus,
 			status.DevName,
 			status.ErrorMessage,
 			time.Now().UTC(),
-		); err != nil {
+		); err != nil && err != storage.ErrNotFound {
 			return err
 		}
 	}
 	return nil
+}
+
+func isValidChannelStatus(status storage.ChannelStatus) bool {
+	switch status {
+	case storage.ChannelStatusOnline,
+		storage.ChannelStatusOffline,
+		storage.ChannelStatusBusy,
+		storage.ChannelStatusDisabled,
+		storage.ChannelStatusError:
+		return true
+	default:
+		return false
+	}
 }

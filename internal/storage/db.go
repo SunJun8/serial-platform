@@ -231,6 +231,25 @@ WHERE id = ?
 	return nil
 }
 
+func (db *DB) UpdateChannelStatusForAgent(id, agentID string, status ChannelStatus, devName, errorMessage string, updatedAt time.Time) error {
+	result, err := db.sql.Exec(`
+UPDATE channels
+SET status = ?, dev_name = ?, error_message = ?, updated_at = ?
+WHERE id = ? AND agent_id = ?
+`, string(status), devName, errorMessage, updatedAt.Format(time.RFC3339Nano), id, agentID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (db *DB) DeleteChannel(id string) error {
 	result, err := db.sql.Exec(`DELETE FROM channels WHERE id = ?`, id)
 	if err != nil {

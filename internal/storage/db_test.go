@@ -372,6 +372,44 @@ func TestDBUpdatesChannelStatusAndConfig(t *testing.T) {
 	}
 }
 
+func TestDBUpdatesChannelStatusForAgentOnly(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "meta.db"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	channel := testChannel("channel-1")
+	channel.AgentID = "agent-1"
+	channel.DevName = "/dev/ttyUSB0"
+	channel.Status = ChannelStatusOffline
+	if err := db.UpsertChannel(channel); err != nil {
+		t.Fatalf("UpsertChannel returned error: %v", err)
+	}
+
+	if err := db.UpdateChannelStatusForAgent("channel-1", "agent-2", ChannelStatusError, "/dev/ttyUSB9", "wrong agent", time.Unix(2, 0).UTC()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("UpdateChannelStatusForAgent wrong agent error = %v, want ErrNotFound", err)
+	}
+	got, err := db.GetChannel("channel-1")
+	if err != nil {
+		t.Fatalf("GetChannel returned error: %v", err)
+	}
+	if got.Status != ChannelStatusOffline || got.DevName != "/dev/ttyUSB0" || got.ErrorMessage != "" {
+		t.Fatalf("channel after wrong agent update = %+v, want original status/dev/error", got)
+	}
+
+	if err := db.UpdateChannelStatusForAgent("channel-1", "agent-1", ChannelStatusBusy, "/dev/ttyUSB1", "", time.Unix(3, 0).UTC()); err != nil {
+		t.Fatalf("UpdateChannelStatusForAgent owner returned error: %v", err)
+	}
+	got, err = db.GetChannel("channel-1")
+	if err != nil {
+		t.Fatalf("GetChannel returned error: %v", err)
+	}
+	if got.Status != ChannelStatusBusy || got.DevName != "/dev/ttyUSB1" {
+		t.Fatalf("channel after owner update = %+v, want busy on /dev/ttyUSB1", got)
+	}
+}
+
 func testChannel(id string) Channel {
 	return Channel{
 		ID:              id,

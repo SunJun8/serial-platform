@@ -399,6 +399,159 @@ func TestAgentWebSocketUpdatesChannelStatus(t *testing.T) {
 	})
 }
 
+func TestAgentWebSocketIgnoresChannelStatusForAnotherAgent(t *testing.T) {
+	db := newAgentWSTestDB(t)
+	if err := db.UpsertChannel(agentWSTestChannel("channel-owned", "agent-1", "owned", 7001)); err != nil {
+		t.Fatalf("UpsertChannel owned returned error: %v", err)
+	}
+	otherChannel := agentWSTestChannel("channel-other", "agent-2", "other", 7002)
+	otherChannel.DevName = "/dev/ttyUSB9"
+	if err := db.UpsertChannel(otherChannel); err != nil {
+		t.Fatalf("UpsertChannel other returned error: %v", err)
+	}
+	srv := server.New(server.ServerConfig{DB: db})
+	httpSrv := httptest.NewServer(srv)
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	conn := dialAgentWS(t, ctx, httpSrv.URL)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	writeAgentHelloAndReadAccepted(t, ctx, conn, "agent-1")
+	var initialSync protocol.ChannelSync
+	if err := protocol.ReadJSON(ctx, conn, &initialSync); err != nil {
+		t.Fatalf("initial sync ReadJSON returned error: %v", err)
+	}
+
+	if err := protocol.WriteJSON(ctx, conn, protocol.ChannelStatusUpdate{
+		Type:    protocol.MessageChannelStatus,
+		AgentID: "agent-1",
+		Statuses: []protocol.ChannelRuntimeStatus{
+			{
+				ChannelID: "channel-other",
+				Status:    "error",
+				DevName:   "/dev/ttyUSB0",
+			},
+			{
+				ChannelID: "channel-owned",
+				Status:    "busy",
+				DevName:   "/dev/ttyUSB1",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("protocol.WriteJSON returned error: %v", err)
+	}
+
+	requireEventually(t, func() bool {
+		channel, err := db.GetChannel("channel-owned")
+		if err != nil {
+			t.Fatalf("GetChannel owned returned error: %v", err)
+		}
+		return channel.Status == storage.ChannelStatusBusy &&
+			channel.DevName == "/dev/ttyUSB1"
+	})
+	other, err := db.GetChannel("channel-other")
+	if err != nil {
+		t.Fatalf("GetChannel other returned error: %v", err)
+	}
+	if other.Status != storage.ChannelStatusOffline ||
+		other.DevName != "/dev/ttyUSB9" ||
+		other.ErrorMessage != "" {
+		t.Fatalf("other channel = %+v, want original status/dev/error", other)
+	}
+}
+
+func TestAgentWebSocketIgnoresInvalidChannelStatus(t *testing.T) {
+	db := newAgentWSTestDB(t)
+	invalidChannel := agentWSTestChannel("channel-invalid", "agent-1", "invalid", 7001)
+	invalidChannel.DevName = "/dev/ttyUSB0"
+	if err := db.UpsertChannel(invalidChannel); err != nil {
+		t.Fatalf("UpsertChannel invalid returned error: %v", err)
+	}
+	if err := db.UpsertChannel(agentWSTestChannel("channel-barrier", "agent-1", "barrier", 7002)); err != nil {
+		t.Fatalf("UpsertChannel barrier returned error: %v", err)
+	}
+	srv := server.New(server.ServerConfig{DB: db})
+	httpSrv := httptest.NewServer(srv)
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	conn := dialAgentWS(t, ctx, httpSrv.URL)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	writeAgentHelloAndReadAccepted(t, ctx, conn, "agent-1")
+	var initialSync protocol.ChannelSync
+	if err := protocol.ReadJSON(ctx, conn, &initialSync); err != nil {
+		t.Fatalf("initial sync ReadJSON returned error: %v", err)
+	}
+
+	if err := protocol.WriteJSON(ctx, conn, protocol.ChannelStatusUpdate{
+		Type:    protocol.MessageChannelStatus,
+		AgentID: "agent-1",
+		Statuses: []protocol.ChannelRuntimeStatus{
+			{
+				ChannelID: "channel-invalid",
+				Status:    "not-a-status",
+				DevName:   "/dev/ttyUSB1",
+			},
+			{
+				ChannelID: "channel-invalid",
+				Status:    "",
+				DevName:   "/dev/ttyUSB2",
+			},
+			{
+				ChannelID: "channel-barrier",
+				Status:    "online",
+				DevName:   "/dev/ttyUSB3",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("protocol.WriteJSON returned error: %v", err)
+	}
+
+	requireEventually(t, func() bool {
+		channel, err := db.GetChannel("channel-barrier")
+		if err != nil {
+			t.Fatalf("GetChannel barrier returned error: %v", err)
+		}
+		return channel.Status == storage.ChannelStatusOnline &&
+			channel.DevName == "/dev/ttyUSB3"
+	})
+	invalid, err := db.GetChannel("channel-invalid")
+	if err != nil {
+		t.Fatalf("GetChannel invalid returned error: %v", err)
+	}
+	if invalid.Status != storage.ChannelStatusOffline ||
+		invalid.DevName != "/dev/ttyUSB0" ||
+		invalid.ErrorMessage != "" {
+		t.Fatalf("invalid channel = %+v, want original status/dev/error", invalid)
+	}
+}
+
+func agentWSTestChannel(id, agentID, alias string, port int) storage.Channel {
+	return storage.Channel{
+		ID:              id,
+		AgentID:         agentID,
+		AutoName:        agentID + "." + alias,
+		Alias:           alias,
+		Role:            "console",
+		IDPath:          alias + "-id-path",
+		IDPathTag:       alias + "-id-tag",
+		RFC2217Port:     port,
+		Status:          storage.ChannelStatusOffline,
+		DefaultBaud:     115200,
+		DefaultDataBits: 8,
+		DefaultParity:   "N",
+		DefaultStopBits: 1,
+		DefaultFlow:     "none",
+		UpdatedAt:       time.Unix(1700000000, 0).UTC(),
+	}
+}
+
 func newAgentWSTestDB(t *testing.T) *storage.DB {
 	t.Helper()
 	db, err := storage.Open(filepath.Join(t.TempDir(), "meta.db"))
