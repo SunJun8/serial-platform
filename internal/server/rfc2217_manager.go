@@ -60,8 +60,9 @@ type rfc2217ActiveEntry struct {
 }
 
 type rfc2217ActiveSignature struct {
-	port   int
-	config serial.Config
+	agentID string
+	port    int
+	config  serial.Config
 }
 
 func (m *rfc2217Manager) sync(ctx context.Context) error {
@@ -177,8 +178,9 @@ func (m *rfc2217Manager) close() {
 
 func rfc2217Signature(channel storage.Channel) rfc2217ActiveSignature {
 	return rfc2217ActiveSignature{
-		port:   channel.RFC2217Port,
-		config: channelDefaultConfig(channel),
+		agentID: channel.AgentID,
+		port:    channel.RFC2217Port,
+		config:  channelDefaultConfig(channel),
 	}
 }
 

@@ -78,6 +78,33 @@ func TestServeRFC2217ReloadsResolverWhenDefaultBaudChanges(t *testing.T) {
 	}
 }
 
+func TestServeRFC2217ReloadsResolverWhenAgentChanges(t *testing.T) {
+	db := openRFC2217ManagerTestDB(t)
+	port := freeTCPPort(t)
+	channel := rfc2217ManagerTestChannel(port)
+	upsertRFC2217ManagerTestChannel(t, db, channel)
+
+	manager, ctx, cancel := newRFC2217ManagerForTest(db, channel.ID)
+	defer cancel()
+	defer manager.close()
+
+	if err := manager.sync(ctx); err != nil {
+		t.Fatalf("sync returned error: %v", err)
+	}
+	firstToken := activeRFC2217ManagerToken(t, manager, channel.ID)
+
+	channel.AgentID = "agent-2"
+	upsertRFC2217ManagerTestChannel(t, db, channel)
+	if err := manager.sync(ctx); err != nil {
+		t.Fatalf("sync after agent update returned error: %v", err)
+	}
+
+	secondToken := activeRFC2217ManagerToken(t, manager, channel.ID)
+	if secondToken == firstToken {
+		t.Fatalf("active listener token = %d after agent update, want rebuilt listener", secondToken)
+	}
+}
+
 func openRFC2217ManagerTestDB(t *testing.T) *storage.DB {
 	t.Helper()
 
@@ -127,6 +154,18 @@ func newRFC2217ManagerForTest(db *storage.DB, channelID string) (*rfc2217Manager
 		bindHost: "127.0.0.1",
 		active:   make(map[string]*rfc2217ActiveEntry),
 	}, ctx, cancel
+}
+
+func activeRFC2217ManagerToken(t *testing.T, manager *rfc2217Manager, channelID string) uint64 {
+	t.Helper()
+
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	entry, ok := manager.active[channelID]
+	if !ok {
+		t.Fatalf("active listener for %q not found", channelID)
+	}
+	return entry.token
 }
 
 func freeTCPPort(t *testing.T) int {
