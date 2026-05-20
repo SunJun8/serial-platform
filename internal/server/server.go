@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"time"
 
 	"serial-platform/internal/serial"
 	"serial-platform/internal/storage"
@@ -18,6 +19,7 @@ type Server struct {
 	logDir         string
 	mux            *http.ServeMux
 	agentRegistry  *agentRegistry
+	tunnels        *TunnelRegistry
 	controlOwner   *ControlOwner
 	liveLog        *LiveLogHub
 	serialResolver func(channelID string) (serial.SerialControl, bool)
@@ -29,6 +31,7 @@ func New(config ServerConfig) *Server {
 		logDir:         config.LogDir,
 		mux:            http.NewServeMux(),
 		agentRegistry:  newAgentRegistry(),
+		tunnels:        NewTunnelRegistry(5 * time.Second),
 		controlOwner:   NewControlOwner(),
 		liveLog:        NewLiveLogHub(),
 		serialResolver: config.SerialResolver,
@@ -62,6 +65,7 @@ func (srv *Server) routes() {
 	srv.mux.HandleFunc("GET /api/logs/download", srv.handleLogDownload)
 	srv.mux.HandleFunc("GET /ws/agent", srv.handleAgentWebSocket)
 	srv.mux.HandleFunc("GET /ws/logs", srv.handleLogWebSocket)
+	srv.mux.HandleFunc("GET /ws/tunnel/{tunnelID}", srv.handleTunnelWebSocket)
 	srv.mux.HandleFunc("GET /ws/terminal/{channelID}", srv.handleTerminalWebSocket)
 	srv.mux.HandleFunc("GET /ws/live-log/{channelID}", srv.handleLiveLogWebSocket)
 	srv.mountStatic()
