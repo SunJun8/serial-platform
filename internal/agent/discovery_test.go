@@ -31,8 +31,10 @@ func TestDiscoverDevicesParsesTTYUSBAndTTYACM(t *testing.T) {
 	if len(devices) != 2 {
 		t.Fatalf("len(devices) = %d, want 2", len(devices))
 	}
-	if devices[0].IDPath == "" || devices[0].DevName == "" {
-		t.Fatalf("device missing identity: %+v", devices[0])
+	for _, device := range devices {
+		if device.IDPath == "" || device.DevName == "" {
+			t.Fatalf("device missing identity: %+v", device)
+		}
 	}
 }
 
