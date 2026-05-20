@@ -18,7 +18,7 @@ func (srv *Server) ServeRFC2217(ctx context.Context, bindHost string) error {
 	manager := &rfc2217Manager{
 		srv:      srv,
 		bindHost: bindHost,
-		active:   make(map[string]context.CancelFunc),
+		active:   make(map[string]*rfc2217ActiveEntry),
 	}
 	defer manager.close()
 
@@ -45,7 +45,20 @@ type rfc2217Manager struct {
 	bindHost string
 
 	mu     sync.Mutex
-	active map[string]context.CancelFunc
+	nextID uint64
+	active map[string]*rfc2217ActiveEntry
+}
+
+type rfc2217ActiveEntry struct {
+	signature rfc2217ActiveSignature
+	cancel    context.CancelFunc
+	done      chan struct{}
+	token     uint64
+}
+
+type rfc2217ActiveSignature struct {
+	port   int
+	config serial.Config
 }
 
 func (m *rfc2217Manager) sync(ctx context.Context) error {
@@ -62,16 +75,39 @@ func (m *rfc2217Manager) sync(ctx context.Context) error {
 		want[channel.ID] = channel
 	}
 
+	var waitFor []*rfc2217ActiveEntry
+	var start []storage.Channel
+
 	m.mu.Lock()
-	for channelID, cancel := range m.active {
-		if _, ok := want[channelID]; !ok {
-			cancel()
+	for channelID, entry := range m.active {
+		channel, ok := want[channelID]
+		if !ok {
+			entry.cancel()
 			delete(m.active, channelID)
+			continue
 		}
+		if entry.signature != rfc2217Signature(channel) {
+			entry.cancel()
+			delete(m.active, channelID)
+			waitFor = append(waitFor, entry)
+			start = append(start, channel)
+		}
+		delete(want, channelID)
+	}
+	for _, channel := range want {
+		start = append(start, channel)
 	}
 	m.mu.Unlock()
 
-	for _, channel := range want {
+	for _, entry := range waitFor {
+		select {
+		case <-entry.done:
+		case <-ctx.Done():
+			return nil
+		}
+	}
+
+	for _, channel := range start {
 		if err := m.start(ctx, channel); err != nil {
 			return err
 		}
@@ -80,8 +116,10 @@ func (m *rfc2217Manager) sync(ctx context.Context) error {
 }
 
 func (m *rfc2217Manager) start(ctx context.Context, channel storage.Channel) error {
+	signature := rfc2217Signature(channel)
+
 	m.mu.Lock()
-	if _, ok := m.active[channel.ID]; ok {
+	if entry, ok := m.active[channel.ID]; ok && entry.signature == signature {
 		m.mu.Unlock()
 		return nil
 	}
@@ -94,6 +132,7 @@ func (m *rfc2217Manager) start(ctx context.Context, channel storage.Channel) err
 	}
 
 	listenerCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
 	listener := NewRFC2217ListenerWithResolver(
 		netListener,
 		channel.ID,
@@ -102,13 +141,23 @@ func (m *rfc2217Manager) start(ctx context.Context, channel storage.Channel) err
 	)
 
 	m.mu.Lock()
-	m.active[channel.ID] = cancel
+	m.nextID++
+	token := m.nextID
+	m.active[channel.ID] = &rfc2217ActiveEntry{
+		signature: signature,
+		cancel:    cancel,
+		done:      done,
+		token:     token,
+	}
 	m.mu.Unlock()
 
 	go func() {
+		defer close(done)
 		_ = listener.Serve(listenerCtx)
 		m.mu.Lock()
-		delete(m.active, channel.ID)
+		if entry, ok := m.active[channel.ID]; ok && entry.token == token {
+			delete(m.active, channel.ID)
+		}
 		m.mu.Unlock()
 	}()
 	return nil
@@ -117,9 +166,16 @@ func (m *rfc2217Manager) start(ctx context.Context, channel storage.Channel) err
 func (m *rfc2217Manager) close() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for channelID, cancel := range m.active {
-		cancel()
+	for channelID, entry := range m.active {
+		entry.cancel()
 		delete(m.active, channelID)
+	}
+}
+
+func rfc2217Signature(channel storage.Channel) rfc2217ActiveSignature {
+	return rfc2217ActiveSignature{
+		port:   channel.RFC2217Port,
+		config: channelDefaultConfig(channel),
 	}
 }
 
