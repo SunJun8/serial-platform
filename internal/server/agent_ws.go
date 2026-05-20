@@ -113,8 +113,12 @@ func (srv *Server) readAgentControlMessages(ctx context.Context, agentID string,
 		var envelope struct {
 			Type protocol.MessageType `json:"type"`
 		}
-		_, data, err := conn.Read(ctx)
+		messageType, data, err := conn.Read(ctx)
 		if err != nil {
+			return
+		}
+		if messageType != websocket.MessageText {
+			_ = conn.Close(websocket.StatusPolicyViolation, "agent control messages must be text")
 			return
 		}
 		if err := json.Unmarshal(data, &envelope); err != nil {

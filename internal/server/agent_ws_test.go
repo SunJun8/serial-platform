@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
@@ -236,6 +237,57 @@ func TestAgentWebSocketStoresCandidatesFromDeviceSnapshot(t *testing.T) {
 			candidates[0].IDPath == "id-path" &&
 			candidates[0].IDPathTag == "id-tag"
 	})
+}
+
+func TestAgentWebSocketRejectsBinaryControlMessage(t *testing.T) {
+	db := newAgentWSTestDB(t)
+	srv := server.New(server.ServerConfig{DB: db})
+	httpSrv := httptest.NewServer(srv)
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	conn := dialAgentWS(t, ctx, httpSrv.URL)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	writeAgentHelloAndReadAccepted(t, ctx, conn, "agent-1")
+	var initialSync protocol.ChannelSync
+	if err := protocol.ReadJSON(ctx, conn, &initialSync); err != nil {
+		t.Fatalf("initial sync ReadJSON returned error: %v", err)
+	}
+
+	payload, err := json.Marshal(protocol.DeviceSnapshot{
+		Type:    protocol.MessageDeviceSnapshot,
+		AgentID: "agent-1",
+		Devices: []protocol.DeviceIdentity{
+			{DevName: "/dev/ttyUSB0", IDPath: "binary-id-path"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal returned error: %v", err)
+	}
+	if err := conn.Write(ctx, websocket.MessageBinary, payload); err != nil {
+		t.Fatalf("conn.Write returned error: %v", err)
+	}
+
+	readCtx, readCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer readCancel()
+	_, _, err = conn.Read(readCtx)
+	if err == nil {
+		t.Fatal("conn.Read returned nil error, want server to reject binary control message")
+	}
+	if got := websocket.CloseStatus(err); got != websocket.StatusPolicyViolation {
+		t.Fatalf("conn.Read close status = %v, want %v", got, websocket.StatusPolicyViolation)
+	}
+
+	candidates, err := db.ListCandidates()
+	if err != nil {
+		t.Fatalf("ListCandidates returned error: %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("len(candidates) = %d, want 0", len(candidates))
+	}
 }
 
 func TestAgentRegistryCanSendChannelSync(t *testing.T) {

@@ -1,7 +1,6 @@
 package protocol
 
 import (
-	"bytes"
 	"encoding/json"
 	"testing"
 )
@@ -91,41 +90,138 @@ func TestProtocolMessageStructsJSON(t *testing.T) {
 }
 
 func TestAgentControlMessagesRoundTrip(t *testing.T) {
-	messages := []any{
-		DeviceSnapshot{
-			Type:    MessageDeviceSnapshot,
-			AgentID: "agent-1",
-			Devices: []DeviceIdentity{
-				{DevName: "/dev/ttyUSB0", IDPath: "id-path"},
+	tests := []struct {
+		name   string
+		msg    any
+		assert func(t *testing.T, data []byte)
+	}{
+		{
+			name: "device snapshot",
+			msg: DeviceSnapshot{
+				Type:    MessageDeviceSnapshot,
+				AgentID: "agent-1",
+				Devices: []DeviceIdentity{
+					{DevName: "/dev/ttyUSB0", IDPath: "id-path", PermissionOK: true},
+				},
+			},
+			assert: func(t *testing.T, data []byte) {
+				t.Helper()
+				var decoded DeviceSnapshot
+				if err := json.Unmarshal(data, &decoded); err != nil {
+					t.Fatalf("Unmarshal(DeviceSnapshot) returned error: %v", err)
+				}
+				if decoded.Type != MessageDeviceSnapshot ||
+					decoded.AgentID != "agent-1" ||
+					len(decoded.Devices) != 1 ||
+					decoded.Devices[0].DevName != "/dev/ttyUSB0" ||
+					decoded.Devices[0].IDPath != "id-path" ||
+					!decoded.Devices[0].PermissionOK {
+					t.Fatalf("decoded DeviceSnapshot = %+v", decoded)
+				}
 			},
 		},
-		ChannelStatusUpdate{
-			Type:    MessageChannelStatus,
-			AgentID: "agent-1",
-			Statuses: []ChannelRuntimeStatus{
-				{ChannelID: "channel-1", Status: "online", DevName: "/dev/ttyUSB0"},
+		{
+			name: "channel status",
+			msg: ChannelStatusUpdate{
+				Type:    MessageChannelStatus,
+				AgentID: "agent-1",
+				Statuses: []ChannelRuntimeStatus{
+					{
+						ChannelID:    "channel-1",
+						Status:       "error",
+						DevName:      "/dev/ttyUSB0",
+						ErrorMessage: "permission denied",
+					},
+				},
+			},
+			assert: func(t *testing.T, data []byte) {
+				t.Helper()
+				var decoded ChannelStatusUpdate
+				if err := json.Unmarshal(data, &decoded); err != nil {
+					t.Fatalf("Unmarshal(ChannelStatusUpdate) returned error: %v", err)
+				}
+				if decoded.Type != MessageChannelStatus ||
+					decoded.AgentID != "agent-1" ||
+					len(decoded.Statuses) != 1 ||
+					decoded.Statuses[0].ChannelID != "channel-1" ||
+					decoded.Statuses[0].Status != "error" ||
+					decoded.Statuses[0].DevName != "/dev/ttyUSB0" ||
+					decoded.Statuses[0].ErrorMessage != "permission denied" {
+					t.Fatalf("decoded ChannelStatusUpdate = %+v", decoded)
+				}
 			},
 		},
-		ChannelSync{
-			Type: MessageChannelSync,
-			Channels: []ChannelConfigMessage{
-				{ID: "channel-1", IDPath: "id-path", DefaultBaud: 115200},
+		{
+			name: "channel sync",
+			msg: ChannelSync{
+				Type: MessageChannelSync,
+				Channels: []ChannelConfigMessage{
+					{
+						ID:              "channel-1",
+						AgentID:         "agent-1",
+						DevName:         "/dev/ttyUSB0",
+						IDPath:          "id-path",
+						Status:          "online",
+						DefaultBaud:     115200,
+						DefaultDataBits: 8,
+						DefaultParity:   "N",
+						DefaultStopBits: 1,
+						DefaultFlow:     "none",
+					},
+				},
+			},
+			assert: func(t *testing.T, data []byte) {
+				t.Helper()
+				var decoded ChannelSync
+				if err := json.Unmarshal(data, &decoded); err != nil {
+					t.Fatalf("Unmarshal(ChannelSync) returned error: %v", err)
+				}
+				if decoded.Type != MessageChannelSync ||
+					len(decoded.Channels) != 1 ||
+					decoded.Channels[0].ID != "channel-1" ||
+					decoded.Channels[0].AgentID != "agent-1" ||
+					decoded.Channels[0].DevName != "/dev/ttyUSB0" ||
+					decoded.Channels[0].IDPath != "id-path" ||
+					decoded.Channels[0].Status != "online" ||
+					decoded.Channels[0].DefaultBaud != 115200 ||
+					decoded.Channels[0].DefaultDataBits != 8 ||
+					decoded.Channels[0].DefaultParity != "N" ||
+					decoded.Channels[0].DefaultStopBits != 1 ||
+					decoded.Channels[0].DefaultFlow != "none" {
+					t.Fatalf("decoded ChannelSync = %+v", decoded)
+				}
 			},
 		},
-		OpenTunnel{
-			Type:      MessageOpenTunnel,
-			TunnelID:  "tunnel-1",
-			ChannelID: "channel-1",
-			Mode:      TunnelModeRFC2217,
+		{
+			name: "open tunnel",
+			msg: OpenTunnel{
+				Type:      MessageOpenTunnel,
+				TunnelID:  "tunnel-1",
+				ChannelID: "channel-1",
+				Mode:      TunnelModeTerminal,
+			},
+			assert: func(t *testing.T, data []byte) {
+				t.Helper()
+				var decoded OpenTunnel
+				if err := json.Unmarshal(data, &decoded); err != nil {
+					t.Fatalf("Unmarshal(OpenTunnel) returned error: %v", err)
+				}
+				if decoded.Type != MessageOpenTunnel ||
+					decoded.TunnelID != "tunnel-1" ||
+					decoded.ChannelID != "channel-1" ||
+					decoded.Mode != TunnelModeTerminal {
+					t.Fatalf("decoded OpenTunnel = %+v", decoded)
+				}
+			},
 		},
 	}
-	for _, msg := range messages {
-		data, err := json.Marshal(msg)
-		if err != nil {
-			t.Fatalf("Marshal(%T) returned error: %v", msg, err)
-		}
-		if !bytes.Contains(data, []byte(`"type"`)) {
-			t.Fatalf("Marshal(%T) = %s, want type field", msg, data)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := json.Marshal(tt.msg)
+			if err != nil {
+				t.Fatalf("Marshal(%T) returned error: %v", tt.msg, err)
+			}
+			tt.assert(t, data)
+		})
 	}
 }
