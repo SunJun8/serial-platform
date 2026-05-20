@@ -43,8 +43,8 @@ func Bridge(ctx context.Context, left io.ReadWriteCloser, right io.ReadWriteClos
 
 	copySide := func(dst io.Writer, src io.Reader) {
 		_, err := io.Copy(dst, src)
-		closeBoth()
 		errs <- err
+		closeBoth()
 	}
 
 	go copySide(left, right)
@@ -53,10 +53,6 @@ func Bridge(ctx context.Context, left io.ReadWriteCloser, right io.ReadWriteClos
 	select {
 	case err := <-errs:
 		closeBoth()
-		select {
-		case <-errs:
-		case <-ctx.Done():
-		}
 		return bridgeError(ctx, err)
 	case <-ctx.Done():
 		closeBoth()

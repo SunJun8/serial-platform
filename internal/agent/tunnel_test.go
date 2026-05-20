@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -149,6 +150,34 @@ func TestBridgeCopiesBothDirectionsAndClosesBothSides(t *testing.T) {
 	waitForReadClosed(t, rightTest)
 }
 
+func TestBridgeReturnsAfterFirstSideEndsEvenIfOtherReadStaysBlocked(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	left := newBlockingReadWriteCloser()
+	right := newEOFReadWriteCloser()
+	t.Cleanup(func() { left.unblockRead(io.ErrClosedPipe) })
+
+	done := make(chan error, 1)
+	go func() {
+		done <- agent.Bridge(ctx, left, right)
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Bridge returned error: %v", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Bridge did not return promptly after first copy ended")
+	}
+
+	waitForCloseCount(t, left, 1)
+	waitForCloseCount(t, right, 1)
+	left.unblockRead(io.ErrClosedPipe)
+	waitForReadUnblocked(t, left)
+}
+
 func writeString(writer io.Writer, value string) error {
 	_, err := writer.Write([]byte(value))
 	return err
@@ -184,5 +213,108 @@ func waitForReadClosed(t *testing.T, conn net.Conn) {
 			t.Fatal("timeout waiting for bridged peer to close")
 		}
 		return
+	}
+}
+
+type eofReadWriteCloser struct {
+	mu     sync.Mutex
+	closes int
+}
+
+func newEOFReadWriteCloser() *eofReadWriteCloser {
+	return &eofReadWriteCloser{}
+}
+
+func (c *eofReadWriteCloser) Read([]byte) (int, error) {
+	return 0, io.EOF
+}
+
+func (c *eofReadWriteCloser) Write(p []byte) (int, error) {
+	return len(p), nil
+}
+
+func (c *eofReadWriteCloser) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closes++
+	return nil
+}
+
+func (c *eofReadWriteCloser) closeCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closes
+}
+
+type blockingReadWriteCloser struct {
+	mu     sync.Mutex
+	closes int
+	read   chan error
+	done   chan struct{}
+}
+
+func newBlockingReadWriteCloser() *blockingReadWriteCloser {
+	return &blockingReadWriteCloser{
+		read: make(chan error, 1),
+		done: make(chan struct{}),
+	}
+}
+
+func (c *blockingReadWriteCloser) Read([]byte) (int, error) {
+	err := <-c.read
+	close(c.done)
+	return 0, err
+}
+
+func (c *blockingReadWriteCloser) Write(p []byte) (int, error) {
+	return len(p), nil
+}
+
+func (c *blockingReadWriteCloser) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closes++
+	return nil
+}
+
+func (c *blockingReadWriteCloser) closeCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closes
+}
+
+func (c *blockingReadWriteCloser) unblockRead(err error) {
+	select {
+	case c.read <- err:
+	default:
+	}
+}
+
+type closeCounter interface {
+	closeCount() int
+}
+
+func waitForCloseCount(t *testing.T, closer closeCounter, want int) {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		if got := closer.closeCount(); got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Close count = %d, want %d", closer.closeCount(), want)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func waitForReadUnblocked(t *testing.T, closer *blockingReadWriteCloser) {
+	t.Helper()
+
+	select {
+	case <-closer.done:
+	case <-time.After(time.Second):
+		t.Fatal("blocked read did not exit before test cleanup")
 	}
 }

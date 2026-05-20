@@ -143,7 +143,7 @@ func (c *WSByteConn) Write(p []byte) (int, error) {
 func (c *WSByteConn) Close() error {
 	var err error
 	c.closeOnce.Do(func() {
-		err = c.ws.CloseNow()
+		err = c.conn.Close()
 		close(c.closed)
 	})
 	return err
