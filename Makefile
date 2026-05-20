@@ -1,6 +1,8 @@
-.PHONY: test build fmt web
+.PHONY: test test-unit build fmt web
 
-test:
+test: test-unit
+
+test-unit:
 	go test ./...
 
 fmt:
