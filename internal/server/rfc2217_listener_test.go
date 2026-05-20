@@ -250,10 +250,7 @@ func TestRFC2217ListenerReleasesControlOwnerOnClose(t *testing.T) {
 	}
 	control.session.waitForClose(t)
 
-	if err := owners.Acquire("channel-1", "web"); err != nil {
-		t.Fatalf("Acquire web after RFC2217 close returned error: %v", err)
-	}
-	owners.Release("channel-1", "web")
+	waitForControlOwnerReleased(t, owners, "channel-1", "web")
 
 	cancel()
 	select {

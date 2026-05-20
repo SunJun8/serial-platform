@@ -23,6 +23,7 @@ func Open(path string) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	db.SetMaxOpenConns(1)
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, schemaSQL); err != nil {
 		_ = db.Close()
