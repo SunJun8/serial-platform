@@ -17,6 +17,7 @@ const (
 	ChannelStatusOffline  ChannelStatus = "offline"
 	ChannelStatusBusy     ChannelStatus = "busy"
 	ChannelStatusDisabled ChannelStatus = "disabled"
+	ChannelStatusError    ChannelStatus = "error"
 )
 
 type LogSegmentStatus string
@@ -43,6 +44,7 @@ type Channel struct {
 	AutoName        string
 	Alias           string
 	Role            string
+	DevName         string
 	IDPath          string
 	IDPathTag       string
 	SysfsDevpath    string
@@ -52,7 +54,27 @@ type Channel struct {
 	DefaultDataBits int
 	DefaultParity   string
 	DefaultStopBits int
+	DefaultFlow     string
+	ErrorMessage    string
 	UpdatedAt       time.Time
+}
+
+type Candidate struct {
+	ID           string
+	AgentID      string
+	DevName      string
+	IDPath       string
+	IDPathTag    string
+	SysfsDevpath string
+	Interface    string
+	VID          string
+	PID          string
+	Serial       string
+	Driver       string
+	Manufacturer string
+	Product      string
+	FirstSeen    time.Time
+	LastSeen     time.Time
 }
 
 type LogSegment struct {

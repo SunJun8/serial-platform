@@ -6,8 +6,55 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
+
 	"serial-platform/internal/storage"
 )
+
+type channelCreateRequest struct {
+	AgentID         string `json:"agent_id"`
+	Alias           string `json:"alias"`
+	Role            string `json:"role"`
+	DevName         string `json:"dev_name"`
+	IDPath          string `json:"id_path"`
+	IDPathTag       string `json:"id_path_tag"`
+	SysfsDevpath    string `json:"sysfs_devpath"`
+	Interface       string `json:"interface"`
+	RFC2217Port     int    `json:"rfc2217_port"`
+	DefaultBaud     int    `json:"default_baud"`
+	DefaultDataBits int    `json:"default_data_bits"`
+	DefaultParity   string `json:"default_parity"`
+	DefaultStopBits int    `json:"default_stop_bits"`
+	DefaultFlow     string `json:"default_flow"`
+}
+
+type channelPatchRequest struct {
+	AgentID         *string `json:"agent_id"`
+	Alias           *string `json:"alias"`
+	Role            *string `json:"role"`
+	DevName         *string `json:"dev_name"`
+	IDPath          *string `json:"id_path"`
+	IDPathTag       *string `json:"id_path_tag"`
+	SysfsDevpath    *string `json:"sysfs_devpath"`
+	Interface       *string `json:"interface"`
+	RFC2217Port     *int    `json:"rfc2217_port"`
+	DefaultBaud     *int    `json:"default_baud"`
+	DefaultDataBits *int    `json:"default_data_bits"`
+	DefaultParity   *string `json:"default_parity"`
+	DefaultStopBits *int    `json:"default_stop_bits"`
+	DefaultFlow     *string `json:"default_flow"`
+}
+
+type candidateConfirmRequest struct {
+	Alias           string `json:"alias"`
+	Role            string `json:"role"`
+	RFC2217Port     int    `json:"rfc2217_port"`
+	DefaultBaud     int    `json:"default_baud"`
+	DefaultDataBits int    `json:"default_data_bits"`
+	DefaultParity   string `json:"default_parity"`
+	DefaultStopBits int    `json:"default_stop_bits"`
+	DefaultFlow     string `json:"default_flow"`
+}
 
 func (srv *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	agents, err := srv.db.ListAgents()
@@ -27,6 +74,239 @@ func (srv *Server) handleListChannels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, channels)
 }
 
+func (srv *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
+	var req channelCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeBadRequest(w, err.Error())
+		return
+	}
+	if req.AgentID == "" {
+		writeBadRequest(w, "agent_id is required")
+		return
+	}
+	if req.RFC2217Port <= 0 {
+		writeBadRequest(w, "rfc2217_port is required")
+		return
+	}
+
+	baud, dataBits, parity, stopBits, flow := serialConfigDefaults(
+		req.DefaultBaud,
+		req.DefaultDataBits,
+		req.DefaultParity,
+		req.DefaultStopBits,
+		req.DefaultFlow,
+	)
+	channel := storage.Channel{
+		ID:              uuid.NewString(),
+		AgentID:         req.AgentID,
+		AutoName:        channelAutoName(req.AgentID, req.Interface),
+		Alias:           req.Alias,
+		Role:            defaultString(req.Role, "console"),
+		DevName:         req.DevName,
+		IDPath:          req.IDPath,
+		IDPathTag:       req.IDPathTag,
+		SysfsDevpath:    req.SysfsDevpath,
+		RFC2217Port:     req.RFC2217Port,
+		Status:          storage.ChannelStatusOffline,
+		DefaultBaud:     baud,
+		DefaultDataBits: dataBits,
+		DefaultParity:   parity,
+		DefaultStopBits: stopBits,
+		DefaultFlow:     flow,
+		UpdatedAt:       time.Now().UTC(),
+	}
+	if err := srv.db.UpsertChannel(channel); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, channel)
+}
+
+func (srv *Server) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
+	channelID := r.PathValue("channelID")
+	if channelID == "" {
+		writeBadRequest(w, "channel id is required")
+		return
+	}
+
+	var req channelPatchRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeBadRequest(w, err.Error())
+		return
+	}
+
+	channel, err := srv.db.GetChannel(channelID)
+	if errors.Is(err, storage.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "channel not found"})
+		return
+	}
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
+	interfaceName := ""
+	if req.AgentID != nil {
+		channel.AgentID = *req.AgentID
+	}
+	if req.Interface != nil {
+		interfaceName = *req.Interface
+	}
+	if req.AgentID != nil || req.Interface != nil {
+		channel.AutoName = channelAutoName(channel.AgentID, interfaceName)
+	}
+	if req.Alias != nil {
+		channel.Alias = *req.Alias
+	}
+	if req.Role != nil {
+		channel.Role = *req.Role
+	}
+	if req.DevName != nil {
+		channel.DevName = *req.DevName
+	}
+	if req.IDPath != nil {
+		channel.IDPath = *req.IDPath
+	}
+	if req.IDPathTag != nil {
+		channel.IDPathTag = *req.IDPathTag
+	}
+	if req.SysfsDevpath != nil {
+		channel.SysfsDevpath = *req.SysfsDevpath
+	}
+	if req.RFC2217Port != nil {
+		channel.RFC2217Port = *req.RFC2217Port
+	}
+	if req.DefaultBaud != nil {
+		channel.DefaultBaud = *req.DefaultBaud
+	}
+	if req.DefaultDataBits != nil {
+		channel.DefaultDataBits = *req.DefaultDataBits
+	}
+	if req.DefaultParity != nil {
+		channel.DefaultParity = *req.DefaultParity
+	}
+	if req.DefaultStopBits != nil {
+		channel.DefaultStopBits = *req.DefaultStopBits
+	}
+	if req.DefaultFlow != nil {
+		channel.DefaultFlow = *req.DefaultFlow
+	}
+	channel.UpdatedAt = time.Now().UTC()
+
+	if err := srv.db.UpsertChannel(channel); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, channel)
+}
+
+func (srv *Server) handleEnableChannel(w http.ResponseWriter, r *http.Request) {
+	srv.updateChannelStatus(w, r, storage.ChannelStatusOffline)
+}
+
+func (srv *Server) handleDisableChannel(w http.ResponseWriter, r *http.Request) {
+	srv.updateChannelStatus(w, r, storage.ChannelStatusDisabled)
+}
+
+func (srv *Server) updateChannelStatus(w http.ResponseWriter, r *http.Request, status storage.ChannelStatus) {
+	channelID := r.PathValue("channelID")
+	if channelID == "" {
+		writeBadRequest(w, "channel id is required")
+		return
+	}
+	channel, err := srv.db.GetChannel(channelID)
+	if errors.Is(err, storage.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "channel not found"})
+		return
+	}
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := srv.db.UpdateChannelStatus(channelID, status, channel.DevName, "", time.Now().UTC()); err != nil {
+		writeError(w, err)
+		return
+	}
+	channel, err = srv.db.GetChannel(channelID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, channel)
+}
+
+func (srv *Server) handleListCandidates(w http.ResponseWriter, r *http.Request) {
+	candidates, err := srv.db.ListCandidates()
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, candidates)
+}
+
+func (srv *Server) handleConfirmCandidate(w http.ResponseWriter, r *http.Request) {
+	candidateID := r.PathValue("candidateID")
+	if candidateID == "" {
+		writeBadRequest(w, "candidate id is required")
+		return
+	}
+	var req candidateConfirmRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeBadRequest(w, err.Error())
+		return
+	}
+	if req.RFC2217Port <= 0 {
+		writeBadRequest(w, "rfc2217_port is required")
+		return
+	}
+
+	candidate, err := srv.db.GetCandidate(candidateID)
+	if errors.Is(err, storage.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "candidate not found"})
+		return
+	}
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
+	baud, dataBits, parity, stopBits, flow := serialConfigDefaults(
+		req.DefaultBaud,
+		req.DefaultDataBits,
+		req.DefaultParity,
+		req.DefaultStopBits,
+		req.DefaultFlow,
+	)
+	channel := storage.Channel{
+		ID:              uuid.NewString(),
+		AgentID:         candidate.AgentID,
+		AutoName:        channelAutoName(candidate.AgentID, candidate.Interface),
+		Alias:           req.Alias,
+		Role:            defaultString(req.Role, "console"),
+		DevName:         candidate.DevName,
+		IDPath:          candidate.IDPath,
+		IDPathTag:       candidate.IDPathTag,
+		SysfsDevpath:    candidate.SysfsDevpath,
+		RFC2217Port:     req.RFC2217Port,
+		Status:          storage.ChannelStatusOffline,
+		DefaultBaud:     baud,
+		DefaultDataBits: dataBits,
+		DefaultParity:   parity,
+		DefaultStopBits: stopBits,
+		DefaultFlow:     flow,
+		UpdatedAt:       time.Now().UTC(),
+	}
+	if err := srv.db.UpsertChannel(channel); err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := srv.db.DeleteCandidate(candidate.ID); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, channel)
+}
+
 func (srv *Server) handleApproveAgent(w http.ResponseWriter, r *http.Request) {
 	agentID := r.PathValue("agentID")
 	if agentID == "" {
@@ -44,6 +324,42 @@ func (srv *Server) handleApproveAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, agent)
+}
+
+func channelAutoName(agentID string, interfaceName string) string {
+	return agentID + "." + normalizeInterface(interfaceName)
+}
+
+func normalizeInterface(interfaceName string) string {
+	if interfaceName == "" {
+		return "if00"
+	}
+	if len(interfaceName) >= 2 && interfaceName[:2] == "if" {
+		return interfaceName
+	}
+	return "if" + interfaceName
+}
+
+func serialConfigDefaults(baud, dataBits int, parity string, stopBits int, flow string) (int, int, string, int, string) {
+	return defaultInt(baud, 115200),
+		defaultInt(dataBits, 8),
+		defaultString(parity, "N"),
+		defaultInt(stopBits, 1),
+		defaultString(flow, "none")
+}
+
+func defaultInt(value int, fallback int) int {
+	if value == 0 {
+		return fallback
+	}
+	return value
+}
+
+func defaultString(value string, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

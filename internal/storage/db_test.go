@@ -135,3 +135,114 @@ func TestDBListsOverlappingLogSegments(t *testing.T) {
 		t.Fatalf("Status = %q, want %q", got[0].Status, LogSegmentStatusActive)
 	}
 }
+
+func TestDBUpsertsCandidatesAndConfirmsChannel(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "meta.db"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	now := time.Unix(1700000000, 0).UTC()
+	candidate := Candidate{
+		ID:           "candidate-1",
+		AgentID:      "agent-1",
+		DevName:      "/dev/ttyUSB0",
+		IDPath:       "pci-0000:00:14.0-usb-0:1.2:1.0",
+		IDPathTag:    "pci-0000_00_14_0-usb-0_1_2_1_0",
+		SysfsDevpath: "/devices/pci/ttyUSB0",
+		Interface:    "00",
+		VID:          "1a86",
+		PID:          "7523",
+		Serial:       "serial-a",
+		Driver:       "ch341",
+		FirstSeen:    now,
+		LastSeen:     now,
+	}
+	if err := db.UpsertCandidate(candidate); err != nil {
+		t.Fatalf("UpsertCandidate returned error: %v", err)
+	}
+	candidates, err := db.ListCandidates()
+	if err != nil {
+		t.Fatalf("ListCandidates returned error: %v", err)
+	}
+	if len(candidates) != 1 || candidates[0].IDPath != candidate.IDPath {
+		t.Fatalf("candidates = %+v", candidates)
+	}
+
+	channel := Channel{
+		ID:              "channel-1",
+		AgentID:         "agent-1",
+		AutoName:        "agent-1.if00",
+		Alias:           "loopback",
+		Role:            "console",
+		DevName:         "/dev/ttyUSB0",
+		IDPath:          candidate.IDPath,
+		IDPathTag:       candidate.IDPathTag,
+		SysfsDevpath:    candidate.SysfsDevpath,
+		RFC2217Port:     7001,
+		Status:          ChannelStatusOffline,
+		DefaultBaud:     115200,
+		DefaultDataBits: 8,
+		DefaultParity:   "N",
+		DefaultStopBits: 1,
+		DefaultFlow:     "none",
+		UpdatedAt:       now,
+	}
+	if err := db.UpsertChannel(channel); err != nil {
+		t.Fatalf("UpsertChannel returned error: %v", err)
+	}
+	if err := db.DeleteCandidate(candidate.ID); err != nil {
+		t.Fatalf("DeleteCandidate returned error: %v", err)
+	}
+	candidates, err = db.ListCandidates()
+	if err != nil {
+		t.Fatalf("ListCandidates returned error: %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("len(candidates) = %d, want 0", len(candidates))
+	}
+}
+
+func TestDBUpdatesChannelStatusAndConfig(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "meta.db"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	channel := testChannel("channel-1")
+	if err := db.UpsertChannel(channel); err != nil {
+		t.Fatalf("UpsertChannel returned error: %v", err)
+	}
+	if err := db.UpdateChannelStatus("channel-1", ChannelStatusError, "/dev/ttyUSB0", "permission denied", time.Unix(2, 0).UTC()); err != nil {
+		t.Fatalf("UpdateChannelStatus returned error: %v", err)
+	}
+	got, err := db.GetChannel("channel-1")
+	if err != nil {
+		t.Fatalf("GetChannel returned error: %v", err)
+	}
+	if got.Status != ChannelStatusError || got.ErrorMessage != "permission denied" || got.DevName != "/dev/ttyUSB0" {
+		t.Fatalf("channel = %+v", got)
+	}
+}
+
+func testChannel(id string) Channel {
+	return Channel{
+		ID:              id,
+		AgentID:         "agent-1",
+		AutoName:        "agent-1.if00",
+		Alias:           "loopback",
+		Role:            "console",
+		IDPath:          "id-path",
+		IDPathTag:       "id-tag",
+		RFC2217Port:     7001,
+		Status:          ChannelStatusOffline,
+		DefaultBaud:     115200,
+		DefaultDataBits: 8,
+		DefaultParity:   "N",
+		DefaultStopBits: 1,
+		DefaultFlow:     "none",
+		UpdatedAt:       time.Unix(1, 0).UTC(),
+	}
+}
