@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -44,6 +45,120 @@ func TestChannelAPICreatesAndUpdatesChannel(t *testing.T) {
 	}
 	if got.Alias != "renamed" || got.DefaultBaud != 921600 {
 		t.Fatalf("channel = %+v, want alias renamed and default baud 921600", got)
+	}
+}
+
+func TestChannelAPIPatchAgentIDKeepsAutoNameInterfaceSuffix(t *testing.T) {
+	db := newAPITestDB(t)
+	channel := apiTestChannel("channel-1", 7001)
+	channel.AgentID = "agent-1"
+	channel.AutoName = "agent-1.if02"
+	if err := db.UpsertChannel(channel); err != nil {
+		t.Fatalf("UpsertChannel returned error: %v", err)
+	}
+	srv := server.New(server.ServerConfig{DB: db})
+	httpSrv := httptest.NewServer(srv)
+	t.Cleanup(httpSrv.Close)
+
+	resp, respBody := patchJSON(t, httpSrv.URL+"/api/channels/channel-1", `{"agent_id":"agent-2"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH /api/channels status = %s, body = %s", resp.Status, respBody)
+	}
+	got, err := db.GetChannel("channel-1")
+	if err != nil {
+		t.Fatalf("GetChannel returned error: %v", err)
+	}
+	if got.AutoName != "agent-2.if02" {
+		t.Fatalf("AutoName = %q, want %q", got.AutoName, "agent-2.if02")
+	}
+}
+
+func TestChannelAPIPatchRejectsInvalidSerialConfig(t *testing.T) {
+	db := newAPITestDB(t)
+	if err := db.UpsertChannel(apiTestChannel("channel-1", 7001)); err != nil {
+		t.Fatalf("UpsertChannel returned error: %v", err)
+	}
+	srv := server.New(server.ServerConfig{DB: db})
+	httpSrv := httptest.NewServer(srv)
+	t.Cleanup(httpSrv.Close)
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "port below range", body: `{"rfc2217_port":0}`},
+		{name: "port above range", body: `{"rfc2217_port":65536}`},
+		{name: "baud below range", body: `{"default_baud":0}`},
+		{name: "data bits below range", body: `{"default_data_bits":4}`},
+		{name: "unknown parity", body: `{"default_parity":"X"}`},
+		{name: "unknown stop bits", body: `{"default_stop_bits":3}`},
+		{name: "unknown flow", body: `{"default_flow":"xonxoff"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, respBody := patchJSON(t, httpSrv.URL+"/api/channels/channel-1", tt.body)
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("PATCH /api/channels status = %s, body = %s", resp.Status, respBody)
+			}
+		})
+	}
+}
+
+func TestChannelAPIPortConflictsReturnConflict(t *testing.T) {
+	db := newAPITestDB(t)
+	if err := db.UpsertChannel(apiTestChannel("channel-1", 7001)); err != nil {
+		t.Fatalf("UpsertChannel channel-1 returned error: %v", err)
+	}
+	if err := db.UpsertChannel(apiTestChannel("channel-2", 7002)); err != nil {
+		t.Fatalf("UpsertChannel channel-2 returned error: %v", err)
+	}
+	candidate := apiTestCandidate("cand-1")
+	if err := db.UpsertCandidate(candidate); err != nil {
+		t.Fatalf("UpsertCandidate returned error: %v", err)
+	}
+	srv := server.New(server.ServerConfig{DB: db})
+	httpSrv := httptest.NewServer(srv)
+	t.Cleanup(httpSrv.Close)
+
+	tests := []struct {
+		name    string
+		request func(t *testing.T) (*http.Response, []byte)
+	}{
+		{
+			name: "create",
+			request: func(t *testing.T) (*http.Response, []byte) {
+				return postJSON(t, httpSrv.URL+"/api/channels", `{"agent_id":"agent-3","alias":"duplicate","rfc2217_port":7001}`)
+			},
+		},
+		{
+			name: "patch",
+			request: func(t *testing.T) (*http.Response, []byte) {
+				return patchJSON(t, httpSrv.URL+"/api/channels/channel-2", `{"rfc2217_port":7001}`)
+			},
+		},
+		{
+			name: "confirm",
+			request: func(t *testing.T) (*http.Response, []byte) {
+				return postJSON(t, httpSrv.URL+"/api/candidates/cand-1/confirm", `{"alias":"duplicate","role":"console","rfc2217_port":7001}`)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, respBody := tt.request(t)
+			if resp.StatusCode != http.StatusConflict {
+				t.Fatalf("status = %s, body = %s", resp.Status, respBody)
+			}
+			if !strings.Contains(string(respBody), "rfc2217_port already exists") {
+				t.Fatalf("body = %s, want clear rfc2217_port conflict", respBody)
+			}
+		})
+	}
+	if _, err := db.GetCandidate("cand-1"); err != nil {
+		t.Fatalf("GetCandidate after failed confirm returned error: %v", err)
+	}
+	if _, err := db.GetChannel("cand-1"); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("GetChannel cand-1 error = %v, want ErrNotFound", err)
 	}
 }
 
@@ -101,6 +216,47 @@ func TestCandidateConfirmCreatesChannelAndDeletesCandidate(t *testing.T) {
 	}
 	if len(candidates) != 0 {
 		t.Fatalf("candidate was not deleted: %+v", candidates)
+	}
+}
+
+func apiTestChannel(id string, port int) storage.Channel {
+	return storage.Channel{
+		ID:              id,
+		AgentID:         "agent-1",
+		AutoName:        "agent-1.if00",
+		Alias:           id,
+		Role:            "console",
+		DevName:         "/dev/ttyUSB0",
+		IDPath:          "id-path-" + id,
+		IDPathTag:       "id-tag-" + id,
+		SysfsDevpath:    "/devices/" + id,
+		RFC2217Port:     port,
+		Status:          storage.ChannelStatusOffline,
+		DefaultBaud:     115200,
+		DefaultDataBits: 8,
+		DefaultParity:   "N",
+		DefaultStopBits: 1,
+		DefaultFlow:     "none",
+		UpdatedAt:       time.Unix(1, 0).UTC(),
+	}
+}
+
+func apiTestCandidate(id string) storage.Candidate {
+	now := time.Unix(10, 0).UTC()
+	return storage.Candidate{
+		ID:           id,
+		AgentID:      "agent-1",
+		DevName:      "/dev/ttyUSB0",
+		IDPath:       "id-path-" + id,
+		IDPathTag:    "id-tag-" + id,
+		SysfsDevpath: "/devices/" + id,
+		Interface:    "00",
+		VID:          "1a86",
+		PID:          "7523",
+		Serial:       "serial-a",
+		Driver:       "ch341",
+		FirstSeen:    now,
+		LastSeen:     now,
 	}
 }
 

@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -187,6 +188,9 @@ func TestDBUpsertsCandidatesAndConfirmsChannel(t *testing.T) {
 	if len(candidates) != 1 || candidates[0].DevName != updatedCandidate.DevName || candidates[0].Serial != updatedCandidate.Serial {
 		t.Fatalf("updated candidates = %+v", candidates)
 	}
+	if !candidates[0].FirstSeen.Equal(candidate.FirstSeen) {
+		t.Fatalf("FirstSeen = %s, want original %s", candidates[0].FirstSeen, candidate.FirstSeen)
+	}
 
 	channel := Channel{
 		ID:              "channel-1",
@@ -219,6 +223,115 @@ func TestDBUpsertsCandidatesAndConfirmsChannel(t *testing.T) {
 	}
 	if len(candidates) != 0 {
 		t.Fatalf("len(candidates) = %d, want 0", len(candidates))
+	}
+}
+
+func TestDBConfirmCandidateCreatesChannelAndDeletesCandidateAtomically(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "meta.db"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	now := time.Unix(1700000000, 0).UTC()
+	candidate := Candidate{
+		ID:           "candidate-1",
+		AgentID:      "agent-1",
+		DevName:      "/dev/ttyUSB0",
+		IDPath:       "pci-0000:00:14.0-usb-0:1.2:1.0",
+		IDPathTag:    "pci-0000_00_14_0-usb-0_1_2_1_0",
+		SysfsDevpath: "/devices/pci/ttyUSB0",
+		Interface:    "00",
+		VID:          "1a86",
+		PID:          "7523",
+		Serial:       "serial-a",
+		Driver:       "ch341",
+		FirstSeen:    now,
+		LastSeen:     now,
+	}
+	if err := db.UpsertCandidate(candidate); err != nil {
+		t.Fatalf("UpsertCandidate returned error: %v", err)
+	}
+	channel := Channel{
+		ID:              "channel-1",
+		AgentID:         candidate.AgentID,
+		AutoName:        "agent-1.if00",
+		Alias:           "loopback",
+		Role:            "console",
+		DevName:         candidate.DevName,
+		IDPath:          candidate.IDPath,
+		IDPathTag:       candidate.IDPathTag,
+		SysfsDevpath:    candidate.SysfsDevpath,
+		RFC2217Port:     7001,
+		Status:          ChannelStatusOffline,
+		DefaultBaud:     115200,
+		DefaultDataBits: 8,
+		DefaultParity:   "N",
+		DefaultStopBits: 1,
+		DefaultFlow:     "none",
+		UpdatedAt:       now,
+	}
+	created, err := db.ConfirmCandidate("candidate-1", func(Candidate) Channel {
+		return channel
+	})
+	if err != nil {
+		t.Fatalf("ConfirmCandidate returned error: %v", err)
+	}
+	if created.ID != channel.ID {
+		t.Fatalf("created.ID = %q, want %q", created.ID, channel.ID)
+	}
+	if _, err := db.GetCandidate("candidate-1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetCandidate error = %v, want ErrNotFound", err)
+	}
+	got, err := db.GetChannel("channel-1")
+	if err != nil {
+		t.Fatalf("GetChannel returned error: %v", err)
+	}
+	if got.IDPath != candidate.IDPath || got.RFC2217Port != channel.RFC2217Port {
+		t.Fatalf("channel = %+v, candidate = %+v", got, candidate)
+	}
+}
+
+func TestDBConfirmCandidateRollbackKeepsCandidateOnChannelConflict(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "meta.db"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	now := time.Unix(1700000000, 0).UTC()
+	candidate := Candidate{
+		ID:           "candidate-1",
+		AgentID:      "agent-1",
+		DevName:      "/dev/ttyUSB0",
+		IDPath:       "id-path",
+		IDPathTag:    "id-tag",
+		SysfsDevpath: "/devices/pci/ttyUSB0",
+		Interface:    "00",
+		FirstSeen:    now,
+		LastSeen:     now,
+	}
+	if err := db.UpsertCandidate(candidate); err != nil {
+		t.Fatalf("UpsertCandidate returned error: %v", err)
+	}
+	existing := testChannel("channel-existing")
+	existing.RFC2217Port = 7001
+	if err := db.UpsertChannel(existing); err != nil {
+		t.Fatalf("UpsertChannel returned error: %v", err)
+	}
+	conflicting := testChannel("channel-new")
+	conflicting.RFC2217Port = existing.RFC2217Port
+	_, err = db.ConfirmCandidate("candidate-1", func(Candidate) Channel {
+		return conflicting
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("ConfirmCandidate error = %v, want ErrConflict", err)
+	}
+	if _, err := db.GetCandidate("candidate-1"); err != nil {
+		t.Fatalf("GetCandidate returned error after rollback: %v", err)
+	}
+	if _, err := db.GetChannel("channel-new"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetChannel channel-new error = %v, want ErrNotFound", err)
 	}
 }
 

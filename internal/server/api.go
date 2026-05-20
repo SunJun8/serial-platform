@@ -3,7 +3,9 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -89,13 +91,18 @@ func (srv *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	baud, dataBits, parity, stopBits, flow := serialConfigDefaults(
+	baud, dataBits, parity, stopBits, flow, err := validateSerialConfig(
+		req.RFC2217Port,
 		req.DefaultBaud,
 		req.DefaultDataBits,
 		req.DefaultParity,
 		req.DefaultStopBits,
 		req.DefaultFlow,
 	)
+	if err != nil {
+		writeBadRequest(w, err.Error())
+		return
+	}
 	channel := storage.Channel{
 		ID:              uuid.NewString(),
 		AgentID:         req.AgentID,
@@ -145,7 +152,7 @@ func (srv *Server) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	interfaceName := ""
+	interfaceName := existingAutoNameInterface(channel.AutoName)
 	if req.AgentID != nil {
 		channel.AgentID = *req.AgentID
 	}
@@ -190,6 +197,10 @@ func (srv *Server) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.DefaultFlow != nil {
 		channel.DefaultFlow = *req.DefaultFlow
+	}
+	if err := validateChannelConfig(channel); err != nil {
+		writeBadRequest(w, err.Error())
+		return
 	}
 	channel.UpdatedAt = time.Now().UTC()
 
@@ -260,47 +271,45 @@ func (srv *Server) handleConfirmCandidate(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	candidate, err := srv.db.GetCandidate(candidateID)
-	if errors.Is(err, storage.ErrNotFound) {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "candidate not found"})
-		return
-	}
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-
-	baud, dataBits, parity, stopBits, flow := serialConfigDefaults(
+	baud, dataBits, parity, stopBits, flow, err := validateSerialConfig(
+		req.RFC2217Port,
 		req.DefaultBaud,
 		req.DefaultDataBits,
 		req.DefaultParity,
 		req.DefaultStopBits,
 		req.DefaultFlow,
 	)
-	channel := storage.Channel{
-		ID:              uuid.NewString(),
-		AgentID:         candidate.AgentID,
-		AutoName:        channelAutoName(candidate.AgentID, candidate.Interface),
-		Alias:           req.Alias,
-		Role:            defaultString(req.Role, "console"),
-		DevName:         candidate.DevName,
-		IDPath:          candidate.IDPath,
-		IDPathTag:       candidate.IDPathTag,
-		SysfsDevpath:    candidate.SysfsDevpath,
-		RFC2217Port:     req.RFC2217Port,
-		Status:          storage.ChannelStatusOffline,
-		DefaultBaud:     baud,
-		DefaultDataBits: dataBits,
-		DefaultParity:   parity,
-		DefaultStopBits: stopBits,
-		DefaultFlow:     flow,
-		UpdatedAt:       time.Now().UTC(),
-	}
-	if err := srv.db.UpsertChannel(channel); err != nil {
-		writeError(w, err)
+	if err != nil {
+		writeBadRequest(w, err.Error())
 		return
 	}
-	if err := srv.db.DeleteCandidate(candidate.ID); err != nil {
+
+	channel, err := srv.db.ConfirmCandidate(candidateID, func(candidate storage.Candidate) storage.Channel {
+		return storage.Channel{
+			ID:              uuid.NewString(),
+			AgentID:         candidate.AgentID,
+			AutoName:        channelAutoName(candidate.AgentID, candidate.Interface),
+			Alias:           req.Alias,
+			Role:            defaultString(req.Role, "console"),
+			DevName:         candidate.DevName,
+			IDPath:          candidate.IDPath,
+			IDPathTag:       candidate.IDPathTag,
+			SysfsDevpath:    candidate.SysfsDevpath,
+			RFC2217Port:     req.RFC2217Port,
+			Status:          storage.ChannelStatusOffline,
+			DefaultBaud:     baud,
+			DefaultDataBits: dataBits,
+			DefaultParity:   parity,
+			DefaultStopBits: stopBits,
+			DefaultFlow:     flow,
+			UpdatedAt:       time.Now().UTC(),
+		}
+	})
+	if errors.Is(err, storage.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "candidate not found"})
+		return
+	}
+	if err != nil {
 		writeError(w, err)
 		return
 	}
@@ -330,6 +339,13 @@ func channelAutoName(agentID string, interfaceName string) string {
 	return agentID + "." + normalizeInterface(interfaceName)
 }
 
+func existingAutoNameInterface(autoName string) string {
+	if idx := strings.LastIndex(autoName, "."); idx >= 0 && idx+1 < len(autoName) {
+		return autoName[idx+1:]
+	}
+	return "if00"
+}
+
 func normalizeInterface(interfaceName string) string {
 	if interfaceName == "" {
 		return "if00"
@@ -338,6 +354,45 @@ func normalizeInterface(interfaceName string) string {
 		return interfaceName
 	}
 	return "if" + interfaceName
+}
+
+func validateSerialConfig(rfc2217Port int, baud, dataBits int, parity string, stopBits int, flow string) (int, int, string, int, string, error) {
+	baud, dataBits, parity, stopBits, flow = serialConfigDefaults(baud, dataBits, parity, stopBits, flow)
+	if err := validateChannelConfig(storage.Channel{
+		RFC2217Port:     rfc2217Port,
+		DefaultBaud:     baud,
+		DefaultDataBits: dataBits,
+		DefaultParity:   parity,
+		DefaultStopBits: stopBits,
+		DefaultFlow:     flow,
+	}); err != nil {
+		return 0, 0, "", 0, "", err
+	}
+	return baud, dataBits, parity, stopBits, flow, nil
+}
+
+func validateChannelConfig(channel storage.Channel) error {
+	if channel.RFC2217Port < 1 || channel.RFC2217Port > 65535 {
+		return fmt.Errorf("rfc2217_port must be between 1 and 65535")
+	}
+	if channel.DefaultBaud < 1 {
+		return fmt.Errorf("default_baud must be greater than 0")
+	}
+	if channel.DefaultDataBits < 5 || channel.DefaultDataBits > 8 {
+		return fmt.Errorf("default_data_bits must be between 5 and 8")
+	}
+	switch channel.DefaultParity {
+	case "N", "E", "O":
+	default:
+		return fmt.Errorf("default_parity must be one of N, E, O")
+	}
+	if channel.DefaultStopBits != 1 && channel.DefaultStopBits != 2 {
+		return fmt.Errorf("default_stop_bits must be 1 or 2")
+	}
+	if channel.DefaultFlow != "none" && channel.DefaultFlow != "rtscts" {
+		return fmt.Errorf("default_flow must be none or rtscts")
+	}
+	return nil
 }
 
 func serialConfigDefaults(baud, dataBits int, parity string, stopBits int, flow string) (int, int, string, int, string) {
@@ -369,6 +424,12 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 }
 
 func writeError(w http.ResponseWriter, err error) {
+	if errors.Is(err, storage.ErrConflict) {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": err.Error(),
+		})
+		return
+	}
 	writeJSON(w, http.StatusInternalServerError, map[string]string{
 		"error": err.Error(),
 	})

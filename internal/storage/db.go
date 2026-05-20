@@ -4,9 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	sqlite "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 type DB struct {
@@ -14,6 +16,7 @@ type DB struct {
 }
 
 var ErrNotFound = errors.New("not found")
+var ErrConflict = errors.New("rfc2217_port already exists")
 
 func Open(path string) (*DB, error) {
 	db, err := sql.Open("sqlite", path)
@@ -113,7 +116,15 @@ func (db *DB) ListAgents() ([]Agent, error) {
 }
 
 func (db *DB) UpsertChannel(channel Channel) error {
-	_, err := db.sql.Exec(`
+	return upsertChannel(db.sql, channel)
+}
+
+type sqlExecer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+func upsertChannel(exec sqlExecer, channel Channel) error {
+	_, err := exec.Exec(`
 INSERT INTO channels (
   id, agent_id, auto_name, alias, role, dev_name, id_path, id_path_tag,
   sysfs_devpath, rfc2217_port, status, error_message, default_baud,
@@ -142,7 +153,21 @@ ON CONFLICT(id) DO UPDATE SET
 		channel.RFC2217Port, string(channel.Status), channel.ErrorMessage,
 		channel.DefaultBaud, channel.DefaultDataBits, channel.DefaultParity,
 		channel.DefaultStopBits, channel.DefaultFlow, channel.UpdatedAt.Format(time.RFC3339Nano))
+	return mapChannelWriteError(err)
+}
+
+func mapChannelWriteError(err error) error {
+	if isRFC2217PortConflict(err) {
+		return ErrConflict
+	}
 	return err
+}
+
+func isRFC2217PortConflict(err error) bool {
+	var sqliteErr *sqlite.Error
+	return errors.As(err, &sqliteErr) &&
+		sqliteErr.Code() == sqlite3.SQLITE_CONSTRAINT_UNIQUE &&
+		strings.Contains(err.Error(), "channels.rfc2217_port")
 }
 
 func (db *DB) GetChannel(id string) (Channel, error) {
@@ -264,7 +289,6 @@ ON CONFLICT(id) DO UPDATE SET
   driver=excluded.driver,
   manufacturer=excluded.manufacturer,
   product=excluded.product,
-  first_seen=excluded.first_seen,
   last_seen=excluded.last_seen
 `, candidate.ID, candidate.AgentID, candidate.DevName, candidate.IDPath, candidate.IDPathTag,
 		candidate.SysfsDevpath, candidate.Interface, candidate.VID, candidate.PID,
@@ -326,6 +350,56 @@ func (db *DB) DeleteCandidate(id string) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (db *DB) ConfirmCandidate(candidateID string, buildChannel func(Candidate) Channel) (Channel, error) {
+	tx, err := db.sql.Begin()
+	if err != nil {
+		return Channel{}, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	row := tx.QueryRow(`
+SELECT id, agent_id, dev_name, id_path, id_path_tag, sysfs_devpath, interface,
+  vid, pid, serial, driver, manufacturer, product, first_seen, last_seen
+FROM candidates
+WHERE id = ?
+`, candidateID)
+	candidate, err := scanCandidate(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Channel{}, ErrNotFound
+	}
+	if err != nil {
+		return Channel{}, err
+	}
+
+	channel := buildChannel(candidate)
+	if err := upsertChannel(tx, channel); err != nil {
+		return Channel{}, err
+	}
+
+	result, err := tx.Exec(`DELETE FROM candidates WHERE id = ?`, candidateID)
+	if err != nil {
+		return Channel{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return Channel{}, err
+	}
+	if affected == 0 {
+		return Channel{}, ErrNotFound
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Channel{}, err
+	}
+	committed = true
+	return channel, nil
 }
 
 func (db *DB) DeleteCandidatesByAgent(agentID string) error {
