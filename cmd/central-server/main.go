@@ -97,15 +97,17 @@ func runWithDeps(args []string, deps centralServerDeps) error {
 	httpServer := &http.Server{Handler: handler}
 	rfc2217Done := make(chan error, 1)
 	go func() {
-		rfc2217Done <- handler.ServeRFC2217(ctx, *rfc2217Bind)
+		err := handler.ServeRFC2217(ctx, *rfc2217Bind)
+		if err != nil {
+			log.Printf("rfc2217 listener stopped: %v", err)
+		}
+		rfc2217Done <- err
 	}()
 
 	log.Printf("central-server %s %s %s listening on %s", buildinfo.Version, buildinfo.Commit, buildinfo.Date, listener.Addr())
 	serveErr := server.ServeHTTPWithShutdown(ctx, httpServer, listener, 5*time.Second)
 	stop()
-	if err := <-rfc2217Done; err != nil {
-		log.Printf("rfc2217 listener stopped: %v", err)
-	}
+	<-rfc2217Done
 	if serveErr != nil {
 		return fmt.Errorf("listen and serve: %w", serveErr)
 	}
