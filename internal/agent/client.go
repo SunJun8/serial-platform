@@ -117,6 +117,78 @@ func (client *Client) ReadControl(ctx context.Context) (protocol.MessageType, []
 	return envelope.Type, data, nil
 }
 
+func (client *Client) HandleControlMessages(ctx context.Context, resolver RFC2217ControlResolver, dialer TunnelDialer) error {
+	for {
+		messageType, data, err := client.ReadControl(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return err
+		}
+		switch messageType {
+		case protocol.MessageOpenTunnel:
+			var open protocol.OpenTunnel
+			if err := json.Unmarshal(data, &open); err != nil {
+				return err
+			}
+			go client.handleOpenTunnel(ctx, open, resolver, dialer)
+		case protocol.MessageChannelSync:
+		default:
+			log.Printf("agent received unsupported control message type %q", messageType)
+		}
+	}
+}
+
+func (client *Client) handleOpenTunnel(ctx context.Context, open protocol.OpenTunnel, resolver RFC2217ControlResolver, dialer TunnelDialer) {
+	if open.Mode != protocol.TunnelModeRFC2217 {
+		client.sendTunnelError(ctx, open.TunnelID, fmt.Errorf("unsupported tunnel mode %q", open.Mode))
+		return
+	}
+	if resolver == nil {
+		client.sendTunnelError(ctx, open.TunnelID, errors.New("rfc2217 control resolver is not configured"))
+		return
+	}
+
+	control, config, err := resolver.RFC2217Control(ctx, open.ChannelID)
+	if err != nil {
+		client.sendTunnelError(ctx, open.TunnelID, err)
+		return
+	}
+	wsConn, err := dialer.Dial(ctx, open.TunnelID)
+	if err != nil {
+		client.sendTunnelError(ctx, open.TunnelID, err)
+		return
+	}
+
+	conn := websocket.NetConn(ctx, wsConn, websocket.MessageBinary)
+	if err := client.SendControl(ctx, protocol.TunnelOpened{
+		Type:     protocol.MessageTunnelOpened,
+		TunnelID: open.TunnelID,
+		Mode:     open.Mode,
+	}); err != nil {
+		_ = conn.Close()
+		return
+	}
+
+	if err := HandleRFC2217Tunnel(ctx, conn, open.ChannelID, control, config); err != nil && ctx.Err() == nil {
+		client.sendTunnelError(ctx, open.TunnelID, err)
+	}
+}
+
+func (client *Client) sendTunnelError(ctx context.Context, tunnelID string, err error) {
+	if err == nil {
+		return
+	}
+	if sendErr := client.SendControl(ctx, protocol.TunnelError{
+		Type:     protocol.MessageTunnelError,
+		TunnelID: tunnelID,
+		Error:    err.Error(),
+	}); sendErr != nil && ctx.Err() == nil {
+		log.Printf("send tunnel error: %v", sendErr)
+	}
+}
+
 func (client *Client) controlConn() (*websocket.Conn, error) {
 	client.mu.Lock()
 	defer client.mu.Unlock()
@@ -352,6 +424,10 @@ func channelConfigFromResponse(channel channelConfigResponse) ChannelConfig {
 
 type RuntimeReconciler interface {
 	Reconcile(context.Context, []ChannelConfig, []DiscoveredDevice) ReconcileResult
+}
+
+type RFC2217ControlResolver interface {
+	RFC2217Control(ctx context.Context, channelID string) (serial.SerialControl, serial.Config, error)
 }
 
 type ChannelSourceFunc func(context.Context) ([]ChannelConfig, error)

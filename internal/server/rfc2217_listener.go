@@ -13,13 +13,18 @@ import (
 
 type RFC2217Resolver func(context.Context) (serial.SerialControl, serial.Config, error)
 
+type RFC2217TunnelResolver interface {
+	OpenRFC2217Tunnel(ctx context.Context, channelID string) (net.Conn, error)
+}
+
 type RFC2217ListenerOption func(*RFC2217Listener)
 
 type RFC2217Listener struct {
-	listener  net.Listener
-	channelID string
-	resolver  RFC2217Resolver
-	owners    *ControlOwner
+	listener       net.Listener
+	channelID      string
+	resolver       RFC2217Resolver
+	tunnelResolver RFC2217TunnelResolver
+	owners         *ControlOwner
 }
 
 func WithRFC2217ControlOwner(owners *ControlOwner) RFC2217ListenerOption {
@@ -39,6 +44,18 @@ func NewRFC2217ListenerWithResolver(listener net.Listener, channelID string, res
 		listener:  listener,
 		channelID: channelID,
 		resolver:  resolver,
+	}
+	for _, option := range options {
+		option(l)
+	}
+	return l
+}
+
+func NewRFC2217TunnelListener(listener net.Listener, channelID string, resolver RFC2217TunnelResolver, options ...RFC2217ListenerOption) *RFC2217Listener {
+	l := &RFC2217Listener{
+		listener:       listener,
+		channelID:      channelID,
+		tunnelResolver: resolver,
 	}
 	for _, option := range options {
 		option(l)
@@ -82,6 +99,11 @@ func (l *RFC2217Listener) handleConn(parent context.Context, conn net.Conn) {
 			return
 		}
 		defer l.owners.Release(l.channelID, "rfc2217")
+	}
+
+	if l.tunnelResolver != nil {
+		l.handleTunnelConn(ctx, conn)
+		return
 	}
 
 	control, config, err := l.resolver(ctx)
@@ -131,6 +153,16 @@ func (l *RFC2217Listener) handleConn(parent context.Context, conn net.Conn) {
 	}
 }
 
+func (l *RFC2217Listener) handleTunnelConn(ctx context.Context, conn net.Conn) {
+	tunnel, err := l.tunnelResolver.OpenRFC2217Tunnel(ctx, l.channelID)
+	if err != nil {
+		return
+	}
+	defer tunnel.Close()
+
+	_ = bridgeConns(ctx, conn, tunnel)
+}
+
 func (l *RFC2217Listener) pipeSerialRX(ctx context.Context, conn net.Conn, events <-chan serial.Event, done chan<- struct{}) {
 	defer close(done)
 	for {
@@ -148,6 +180,38 @@ func (l *RFC2217Listener) pipeSerialRX(ctx context.Context, conn net.Conn, event
 				return
 			}
 		}
+	}
+}
+
+func bridgeConns(ctx context.Context, left, right net.Conn) error {
+	errs := make(chan error, 2)
+	var closeOnce sync.Once
+	closeBoth := func() {
+		closeOnce.Do(func() {
+			_ = left.Close()
+			_ = right.Close()
+		})
+	}
+
+	copySide := func(dst io.Writer, src io.Reader) {
+		_, err := io.Copy(dst, src)
+		errs <- err
+		closeBoth()
+	}
+
+	go copySide(left, right)
+	go copySide(right, left)
+
+	select {
+	case err := <-errs:
+		closeBoth()
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return err
+	case <-ctx.Done():
+		closeBoth()
+		return ctx.Err()
 	}
 }
 

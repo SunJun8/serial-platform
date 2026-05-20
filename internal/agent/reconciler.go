@@ -2,11 +2,14 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 
 	"serial-platform/internal/serial"
 )
+
+var errChannelControlUnavailable = errors.New("serial control is not available")
 
 type BackendFactory interface {
 	Open(devName string, config serial.Config) (serial.Backend, error)
@@ -58,6 +61,7 @@ type managedWorker struct {
 	done    <-chan struct{}
 	devName string
 	idPath  string
+	config  serial.Config
 	events  <-chan serial.Event
 }
 
@@ -170,6 +174,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, channels []ChannelConfig, de
 			done:    done,
 			devName: device.DevName,
 			idPath:  device.IDPath,
+			config:  channel.DefaultConfig,
 			events:  events,
 		}
 		go func() {
@@ -246,6 +251,22 @@ func (r *Reconciler) stopWorkerLocked(channelID string) {
 	worker.cancel()
 	_ = worker.backend.Close()
 	delete(r.workers, channelID)
+}
+
+func (r *Reconciler) RFC2217Control(ctx context.Context, channelID string) (serial.SerialControl, serial.Config, error) {
+	select {
+	case <-ctx.Done():
+		return nil, serial.Config{}, ctx.Err()
+	default:
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	worker := r.workers[channelID]
+	if worker == nil || !worker.running() {
+		return nil, serial.Config{}, errChannelControlUnavailable
+	}
+	return worker.worker, worker.config, nil
 }
 
 func proxyWorkerEvents(ctx context.Context, source <-chan serial.Event) <-chan serial.Event {

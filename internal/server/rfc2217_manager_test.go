@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"context"
 	"net"
+	"net/http/httptest"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
-	"serial-platform/internal/serial"
+	"nhooyr.io/websocket"
+
+	"serial-platform/internal/protocol"
 	"serial-platform/internal/server"
 	"serial-platform/internal/storage"
 )
@@ -51,21 +55,17 @@ func TestServeRFC2217StartsListenerForConfiguredChannel(t *testing.T) {
 		t.Fatalf("UpsertChannel returned error: %v", err)
 	}
 
-	backend := serial.NewFakeBackend()
-	worker := serial.NewWorker(channel.ID, serial.DefaultConfig(), backend)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go worker.Run(ctx)
 
 	srv := server.New(server.ServerConfig{
 		DB: db,
-		SerialResolver: func(channelID string) (serial.SerialControl, bool) {
-			if channelID != channel.ID {
-				return nil, false
-			}
-			return worker, true
-		},
 	})
+	httpSrv := httptest.NewServer(srv)
+	t.Cleanup(httpSrv.Close)
+	agentWS := connectRFC2217ManagerAgent(t, ctx, httpSrv.URL, channel.AgentID)
+	defer agentWS.CloseNow()
+
 	serveErr := make(chan error, 1)
 	go func() {
 		serveErr <- srv.ServeRFC2217(ctx, "127.0.0.1")
@@ -85,26 +85,72 @@ func TestServeRFC2217StartsListenerForConfiguredChannel(t *testing.T) {
 	conn := dialEventually(t, net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
 	defer conn.Close()
 
+	open := readRFC2217OpenTunnel(t, ctx, agentWS)
+	tunnelWS, _, err := websocket.Dial(ctx, rfc2217ManagerWSURL(httpSrv.URL, "/ws/tunnel/"+open.TunnelID), nil)
+	if err != nil {
+		t.Fatalf("tunnel websocket Dial returned error: %v", err)
+	}
+	defer tunnelWS.CloseNow()
+	tunnelConn := websocket.NetConn(ctx, tunnelWS, websocket.MessageBinary)
+	defer tunnelConn.Close()
+
 	if _, err := conn.Write([]byte("AT\r")); err != nil {
 		t.Fatalf("conn.Write returned error: %v", err)
 	}
-	deadline := time.Now().Add(time.Second)
-	for {
-		if time.Now().After(deadline) {
-			t.Fatal("fake backend did not receive RFC2217 client bytes")
-		}
-		writes := backend.Writes()
-		if len(writes) > 0 {
-			if !bytes.Equal(writes[0], []byte("AT\r")) {
-				t.Fatalf("backend write = %q, want AT\\r", writes[0])
-			}
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+	if err := tunnelConn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("tunnelConn.SetReadDeadline returned error: %v", err)
 	}
-	if backend.Config().Flow != "none" {
-		t.Fatalf("backend flow = %q, want none", backend.Config().Flow)
+	buf := make([]byte, 3)
+	if _, err := tunnelConn.Read(buf); err != nil {
+		t.Fatalf("tunnelConn.Read returned error: %v", err)
 	}
+	if !bytes.Equal(buf, []byte("AT\r")) {
+		t.Fatalf("agent tunnel read = %q, want AT\\r", buf)
+	}
+}
+
+func connectRFC2217ManagerAgent(t *testing.T, ctx context.Context, serverURL, agentID string) *websocket.Conn {
+	t.Helper()
+
+	conn, _, err := websocket.Dial(ctx, rfc2217ManagerWSURL(serverURL, "/ws/agent"), nil)
+	if err != nil {
+		t.Fatalf("agent websocket Dial returned error: %v", err)
+	}
+	if err := protocol.WriteJSON(ctx, conn, protocol.AgentHello{
+		Type:    protocol.MessageAgentHello,
+		AgentID: agentID,
+	}); err != nil {
+		t.Fatalf("write agent hello returned error: %v", err)
+	}
+	var accepted protocol.AgentAccepted
+	if err := protocol.ReadJSON(ctx, conn, &accepted); err != nil {
+		t.Fatalf("read agent accepted returned error: %v", err)
+	}
+	var syncMessage protocol.ChannelSync
+	if err := protocol.ReadJSON(ctx, conn, &syncMessage); err != nil {
+		t.Fatalf("read channel sync returned error: %v", err)
+	}
+	return conn
+}
+
+func readRFC2217OpenTunnel(t *testing.T, ctx context.Context, conn *websocket.Conn) protocol.OpenTunnel {
+	t.Helper()
+
+	var open protocol.OpenTunnel
+	if err := protocol.ReadJSON(ctx, conn, &open); err != nil {
+		t.Fatalf("read open_tunnel returned error: %v", err)
+	}
+	if open.Type != protocol.MessageOpenTunnel ||
+		open.ChannelID != "channel-1" ||
+		open.Mode != protocol.TunnelModeRFC2217 ||
+		open.TunnelID == "" {
+		t.Fatalf("open_tunnel = %+v", open)
+	}
+	return open
+}
+
+func rfc2217ManagerWSURL(serverURL, path string) string {
+	return "ws" + strings.TrimPrefix(serverURL, "http") + path
 }
 
 func dialEventually(t *testing.T, addr string) net.Conn {

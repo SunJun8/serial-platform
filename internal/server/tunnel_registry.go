@@ -38,15 +38,48 @@ func (r *TunnelRegistry) Wait(ctx context.Context, tunnelID string) (net.Conn, e
 		return nil, err
 	}
 
+	waiter, err := r.registerWaiter(tunnelID)
+	if err != nil {
+		return nil, err
+	}
+
+	return r.waitForConn(ctx, tunnelID, waiter)
+}
+
+func (r *TunnelRegistry) WaitAfterRegister(ctx context.Context, tunnelID string, afterRegister func() error) (net.Conn, error) {
+	if tunnelID == "" {
+		return nil, errTunnelIDEmpty
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	waiter, err := r.registerWaiter(tunnelID)
+	if err != nil {
+		return nil, err
+	}
+	if afterRegister != nil {
+		if err := afterRegister(); err != nil {
+			r.cancelWaiter(tunnelID, waiter)
+			return nil, err
+		}
+	}
+
+	return r.waitForConn(ctx, tunnelID, waiter)
+}
+
+func (r *TunnelRegistry) registerWaiter(tunnelID string) (chan net.Conn, error) {
 	waiter := make(chan net.Conn, 1)
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	if _, exists := r.waiters[tunnelID]; exists {
-		r.mu.Unlock()
 		return nil, errTunnelWaiterExists
 	}
 	r.waiters[tunnelID] = waiter
-	r.mu.Unlock()
+	return waiter, nil
+}
 
+func (r *TunnelRegistry) waitForConn(ctx context.Context, tunnelID string, waiter chan net.Conn) (net.Conn, error) {
 	waitCtx := ctx
 	cancel := func() {}
 	if r.timeout > 0 {
@@ -77,6 +110,16 @@ func (r *TunnelRegistry) Wait(ctx context.Context, tunnelID string) (net.Conn, e
 		}
 		return conn, nil
 	}
+}
+
+func (r *TunnelRegistry) cancelWaiter(tunnelID string, waiter chan net.Conn) {
+	r.mu.Lock()
+	current, exists := r.waiters[tunnelID]
+	if exists && current == waiter {
+		delete(r.waiters, tunnelID)
+		close(waiter)
+	}
+	r.mu.Unlock()
 }
 
 func (r *TunnelRegistry) Attach(tunnelID string, conn net.Conn) error {

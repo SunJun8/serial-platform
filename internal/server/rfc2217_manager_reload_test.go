@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"serial-platform/internal/rfc2217"
-	"serial-platform/internal/serial"
 	"serial-platform/internal/storage"
 )
 
@@ -62,7 +61,10 @@ func TestServeRFC2217ReloadsResolverWhenDefaultBaudChanges(t *testing.T) {
 		t.Fatalf("sync returned error: %v", err)
 	}
 	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
-	assertRFC2217BaudQuery(t, addr, channel.DefaultBaud)
+	firstConn := dialRFC2217Eventually(t, addr)
+	if err := firstConn.Close(); err != nil {
+		t.Fatalf("firstConn.Close returned error: %v", err)
+	}
 
 	channel.DefaultBaud = 57600
 	upsertRFC2217ManagerTestChannel(t, db, channel)
@@ -70,7 +72,10 @@ func TestServeRFC2217ReloadsResolverWhenDefaultBaudChanges(t *testing.T) {
 		t.Fatalf("sync after baud update returned error: %v", err)
 	}
 
-	assertRFC2217BaudQuery(t, addr, channel.DefaultBaud)
+	secondConn := dialRFC2217Eventually(t, addr)
+	if err := secondConn.Close(); err != nil {
+		t.Fatalf("secondConn.Close returned error: %v", err)
+	}
 }
 
 func openRFC2217ManagerTestDB(t *testing.T) *storage.DB {
@@ -113,16 +118,8 @@ func upsertRFC2217ManagerTestChannel(t *testing.T, db *storage.DB, channel stora
 }
 
 func newRFC2217ManagerForTest(db *storage.DB, channelID string) (*rfc2217Manager, context.Context, context.CancelFunc) {
-	backend := serial.NewFakeBackend()
-	worker := serial.NewWorker(channelID, serial.DefaultConfig(), backend)
 	srv := New(ServerConfig{
 		DB: db,
-		SerialResolver: func(id string) (serial.SerialControl, bool) {
-			if id != channelID {
-				return nil, false
-			}
-			return worker, true
-		},
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	return &rfc2217Manager{

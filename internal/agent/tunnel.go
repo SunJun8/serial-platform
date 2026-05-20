@@ -8,6 +8,9 @@ import (
 	"sync"
 
 	"nhooyr.io/websocket"
+
+	"serial-platform/internal/rfc2217"
+	"serial-platform/internal/serial"
 )
 
 type TunnelDialer struct {
@@ -58,6 +61,87 @@ func Bridge(ctx context.Context, left io.ReadWriteCloser, right io.ReadWriteClos
 		closeBoth()
 		return ctx.Err()
 	}
+}
+
+func HandleRFC2217Tunnel(ctx context.Context, conn io.ReadWriteCloser, channelID string, control serial.SerialControl, config serial.Config) error {
+	session, err := control.OpenControlSession(ctx, "rfc2217")
+	if err != nil {
+		_ = conn.Close()
+		return err
+	}
+	defer session.Close()
+
+	tunnelCtx, cancel := context.WithCancel(ctx)
+	eventsDone := make(chan struct{})
+	go pipeRFC2217Events(tunnelCtx, conn, channelID, control.Events(), eventsDone)
+	defer func() {
+		cancel()
+		_ = conn.Close()
+		<-eventsDone
+	}()
+
+	current := config
+	parser := rfc2217.NewParser()
+	buf := make([]byte, 4096)
+	for {
+		n, readErr := conn.Read(buf)
+		if n > 0 {
+			ops, parseErr := parser.Feed(buf[:n])
+			if parseErr != nil {
+				return parseErr
+			}
+			response := []byte(nil)
+			current, response, parseErr = rfc2217.ApplyOperations(session, current, ops)
+			if parseErr != nil {
+				return parseErr
+			}
+			if len(response) > 0 {
+				if _, err := conn.Write(response); err != nil {
+					return err
+				}
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				return nil
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return readErr
+		}
+	}
+}
+
+func pipeRFC2217Events(ctx context.Context, conn io.Writer, channelID string, events <-chan serial.Event, done chan<- struct{}) {
+	defer close(done)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case event, ok := <-events:
+			if !ok {
+				return
+			}
+			if event.ChannelID != channelID || event.Direction != serial.DirectionRX || len(event.Data) == 0 {
+				continue
+			}
+			if _, err := conn.Write(escapeRFC2217Data(event.Data)); err != nil {
+				return
+			}
+		}
+	}
+}
+
+func escapeRFC2217Data(data []byte) []byte {
+	out := make([]byte, 0, len(data))
+	for _, value := range data {
+		out = append(out, value)
+		if value == rfc2217.IAC {
+			out = append(out, rfc2217.IAC)
+		}
+	}
+	return out
 }
 
 func bridgeError(ctx context.Context, err error) error {

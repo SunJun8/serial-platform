@@ -58,6 +58,54 @@ func TestReconcilerStartsWorkerForMatchingChannel(t *testing.T) {
 	}
 }
 
+func TestReconcilerResolvesRFC2217ControlFromExistingWorker(t *testing.T) {
+	backendFactory := newFakeBackendFactory()
+	reconciler := agent.NewReconciler(agent.ReconcilerConfig{BackendFactory: backendFactory})
+	config := serial.DefaultConfig()
+	config.Baud = 57600
+	channels := []agent.ChannelConfig{{
+		ID:            "channel-1",
+		IDPath:        "id-path-1",
+		Status:        "offline",
+		DefaultConfig: config,
+	}}
+	devices := []agent.DiscoveredDevice{{
+		DevName:      "/dev/ttyUSB0",
+		IDPath:       "id-path-1",
+		PermissionOK: true,
+	}}
+
+	result := reconciler.Reconcile(context.Background(), channels, devices)
+	if len(result.Statuses) != 1 || result.Statuses[0].Status != "online" {
+		t.Fatalf("statuses = %+v, want one online status", result.Statuses)
+	}
+
+	control, gotConfig, err := reconciler.RFC2217Control(context.Background(), "channel-1")
+	if err != nil {
+		t.Fatalf("RFC2217Control returned error: %v", err)
+	}
+	if control == nil {
+		t.Fatal("RFC2217Control returned nil control")
+	}
+	if gotConfig != config {
+		t.Fatalf("RFC2217Control config = %+v, want %+v", gotConfig, config)
+	}
+
+	session, err := control.OpenControlSession(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("OpenControlSession returned error: %v", err)
+	}
+	defer session.Close()
+	if err := session.Write([]byte("AT\r")); err != nil {
+		t.Fatalf("session.Write returned error: %v", err)
+	}
+	backend := backendFactory.backend("/dev/ttyUSB0")
+	if backend == nil {
+		t.Fatal("backend for /dev/ttyUSB0 was not opened")
+	}
+	backend.waitForWrite(t, []byte("AT\r"))
+}
+
 func TestReconcilerRestartsExitedWorkerForMatchingChannel(t *testing.T) {
 	backendFactory := newFakeBackendFactory()
 	reconciler := agent.NewReconciler(agent.ReconcilerConfig{BackendFactory: backendFactory})
@@ -430,6 +478,7 @@ type reconcilerFakeBackend struct {
 	closed    chan struct{}
 	readDone  chan struct{}
 	mu        sync.Mutex
+	writes    [][]byte
 	readEOF   bool
 	closeEOF  bool
 	closeOnce sync.Once
@@ -466,6 +515,9 @@ func (b *reconcilerFakeBackend) Read(buf []byte) (int, error) {
 }
 
 func (b *reconcilerFakeBackend) Write(data []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.writes = append(b.writes, append([]byte(nil), data...))
 	return len(data), nil
 }
 
@@ -508,4 +560,23 @@ func (b *reconcilerFakeBackend) waitClosed(timeout time.Duration) bool {
 	case <-time.After(timeout):
 		return false
 	}
+}
+
+func (b *reconcilerFakeBackend) waitForWrite(t *testing.T, want []byte) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		b.mu.Lock()
+		for _, got := range b.writes {
+			if string(got) == string(want) {
+				b.mu.Unlock()
+				return
+			}
+		}
+		b.mu.Unlock()
+		time.Sleep(time.Millisecond)
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	t.Fatalf("writes = %q, want %q", b.writes, want)
 }

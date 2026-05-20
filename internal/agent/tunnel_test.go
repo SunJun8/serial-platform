@@ -15,6 +15,7 @@ import (
 	"nhooyr.io/websocket"
 
 	"serial-platform/internal/agent"
+	"serial-platform/internal/serial"
 )
 
 func TestAgentTunnelDialsServerAndBridgesBytes(t *testing.T) {
@@ -178,6 +179,61 @@ func TestBridgeReturnsAfterFirstSideEndsEvenIfOtherReadStaysBlocked(t *testing.T
 	waitForReadUnblocked(t, left)
 }
 
+func TestAgentHandlesRFC2217TunnelWithLocalSerialControl(t *testing.T) {
+	control := newAgentRFC2217FakeControl()
+	agentConn, clientConn := net.Pipe()
+	t.Cleanup(func() { _ = agentConn.Close() })
+	t.Cleanup(func() { _ = clientConn.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- agent.HandleRFC2217Tunnel(ctx, agentConn, "channel-1", control, serial.DefaultConfig())
+	}()
+
+	control.session.waitForOpen(t)
+	if control.session.owner() != "rfc2217" {
+		t.Fatalf("control session owner = %q, want rfc2217", control.session.owner())
+	}
+
+	if _, err := clientConn.Write([]byte("AT\r")); err != nil {
+		t.Fatalf("client tunnel Write returned error: %v", err)
+	}
+	control.session.waitForWrite(t, []byte("AT\r"))
+
+	control.events <- serial.Event{
+		ChannelID: "channel-1",
+		Direction: serial.DirectionRX,
+		Timestamp: time.Now(),
+		Data:      []byte{'O', 'K', 0xff, '\r', '\n'},
+	}
+	if err := clientConn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("client tunnel SetReadDeadline returned error: %v", err)
+	}
+	response := make([]byte, 6)
+	if _, err := io.ReadFull(clientConn, response); err != nil {
+		t.Fatalf("client tunnel ReadFull returned error: %v", err)
+	}
+	want := []byte{'O', 'K', 0xff, 0xff, '\r', '\n'}
+	if string(response) != string(want) {
+		t.Fatalf("client tunnel read = %x, want %x", response, want)
+	}
+
+	if err := clientConn.Close(); err != nil {
+		t.Fatalf("client tunnel Close returned error: %v", err)
+	}
+	control.session.waitForClose(t)
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, io.ErrClosedPipe) {
+			t.Fatalf("HandleRFC2217Tunnel returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("HandleRFC2217Tunnel did not return after tunnel close")
+	}
+}
+
 func writeString(writer io.Writer, value string) error {
 	_, err := writer.Write([]byte(value))
 	return err
@@ -317,4 +373,116 @@ func waitForReadUnblocked(t *testing.T, closer *blockingReadWriteCloser) {
 	case <-time.After(time.Second):
 		t.Fatal("blocked read did not exit before test cleanup")
 	}
+}
+
+type agentRFC2217FakeControl struct {
+	session *agentRFC2217FakeSession
+	events  chan serial.Event
+}
+
+func newAgentRFC2217FakeControl() *agentRFC2217FakeControl {
+	return &agentRFC2217FakeControl{
+		session: newAgentRFC2217FakeSession(),
+		events:  make(chan serial.Event, 4),
+	}
+}
+
+func (c *agentRFC2217FakeControl) OpenControlSession(_ context.Context, owner string) (serial.ControlSession, error) {
+	c.session.markOpen(owner)
+	return c.session, nil
+}
+
+func (c *agentRFC2217FakeControl) Events() <-chan serial.Event {
+	return c.events
+}
+
+type agentRFC2217FakeSession struct {
+	mu        sync.Mutex
+	ownerName string
+	writes    [][]byte
+	opened    chan struct{}
+	closed    chan struct{}
+	onceOpen  sync.Once
+	onceClose sync.Once
+}
+
+func newAgentRFC2217FakeSession() *agentRFC2217FakeSession {
+	return &agentRFC2217FakeSession{
+		opened: make(chan struct{}),
+		closed: make(chan struct{}),
+	}
+}
+
+func (s *agentRFC2217FakeSession) markOpen(owner string) {
+	s.mu.Lock()
+	s.ownerName = owner
+	s.mu.Unlock()
+	s.onceOpen.Do(func() {
+		close(s.opened)
+	})
+}
+
+func (s *agentRFC2217FakeSession) owner() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ownerName
+}
+
+func (s *agentRFC2217FakeSession) Write(data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.writes = append(s.writes, append([]byte(nil), data...))
+	return nil
+}
+
+func (s *agentRFC2217FakeSession) SetConfig(serial.Config) error { return nil }
+
+func (s *agentRFC2217FakeSession) SetDTR(bool) error { return nil }
+
+func (s *agentRFC2217FakeSession) SetRTS(bool) error { return nil }
+
+func (s *agentRFC2217FakeSession) SendBreak(time.Duration) error { return nil }
+
+func (s *agentRFC2217FakeSession) Close() error {
+	s.onceClose.Do(func() {
+		close(s.closed)
+	})
+	return nil
+}
+
+func (s *agentRFC2217FakeSession) waitForOpen(t *testing.T) {
+	t.Helper()
+	select {
+	case <-s.opened:
+	case <-time.After(time.Second):
+		t.Fatal("control session was not opened")
+	}
+}
+
+func (s *agentRFC2217FakeSession) waitForClose(t *testing.T) {
+	t.Helper()
+	select {
+	case <-s.closed:
+	case <-time.After(time.Second):
+		t.Fatal("control session was not closed")
+	}
+}
+
+func (s *agentRFC2217FakeSession) waitForWrite(t *testing.T, want []byte) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		s.mu.Lock()
+		for _, got := range s.writes {
+			if string(got) == string(want) {
+				s.mu.Unlock()
+				return
+			}
+		}
+		s.mu.Unlock()
+		time.Sleep(time.Millisecond)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t.Fatalf("writes = %q, want %q", s.writes, want)
 }

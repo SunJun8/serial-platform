@@ -62,9 +62,11 @@ func main() {
 		}
 	}()
 
+	reconciler := agent.NewReconciler(agent.ReconcilerConfig{})
 	runtime := agent.NewRuntime(agent.RuntimeConfig{
 		ScanInterval:  3 * time.Second,
 		ChannelSource: client.FetchChannelConfigs,
+		Reconciler:    reconciler,
 		ForwardEvents: func(ctx context.Context, events <-chan serial.Event) error {
 			return uploader.Forward(ctx, events)
 		},
@@ -72,6 +74,11 @@ func main() {
 	go func() {
 		if err := runtime.Run(ctx); err != nil && ctx.Err() == nil {
 			log.Printf("agent runtime: %v", err)
+		}
+	}()
+	go func() {
+		if err := client.HandleControlMessages(ctx, reconciler, agent.TunnelDialer{ServerURL: *serverURL}); err != nil && ctx.Err() == nil {
+			log.Printf("agent control messages: %v", err)
 		}
 	}()
 

@@ -266,6 +266,106 @@ func TestRFC2217ListenerReleasesControlOwnerOnClose(t *testing.T) {
 	}
 }
 
+func TestRFC2217ListenerRequestsAgentTunnelAndBridgesTCP(t *testing.T) {
+	netListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen returned error: %v", err)
+	}
+	agentSide, serverSide := net.Pipe()
+	t.Cleanup(func() { _ = agentSide.Close() })
+	t.Cleanup(func() { _ = serverSide.Close() })
+
+	resolver := &rfc2217FakeTunnelResolver{
+		conn:        serverSide,
+		opened:      make(chan string, 1),
+		releaseGate: make(chan struct{}),
+	}
+	owners := server.NewControlOwner()
+	listener := server.NewRFC2217TunnelListener(
+		netListener,
+		"channel-1",
+		resolver,
+		server.WithRFC2217ControlOwner(owners),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- listener.Serve(ctx)
+	}()
+
+	conn, err := net.Dial("tcp", netListener.Addr().String())
+	if err != nil {
+		t.Fatalf("net.Dial returned error: %v", err)
+	}
+	defer conn.Close()
+
+	select {
+	case channelID := <-resolver.opened:
+		if channelID != "channel-1" {
+			t.Fatalf("OpenRFC2217Tunnel channelID = %q, want channel-1", channelID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("OpenRFC2217Tunnel was not called")
+	}
+	if err := owners.Acquire("channel-1", "web"); err == nil {
+		owners.Release("channel-1", "web")
+		t.Fatal("ControlOwner acquire succeeded while RFC2217 tunnel was active")
+	}
+
+	if _, err := conn.Write([]byte("AT\r")); err != nil {
+		t.Fatalf("tcp Write returned error: %v", err)
+	}
+	if err := agentSide.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("agentSide.SetReadDeadline returned error: %v", err)
+	}
+	buf := make([]byte, 3)
+	if _, err := io.ReadFull(agentSide, buf); err != nil {
+		t.Fatalf("agentSide ReadFull returned error: %v", err)
+	}
+	if !bytes.Equal(buf, []byte("AT\r")) {
+		t.Fatalf("agent tunnel read = %q, want AT\\r", buf)
+	}
+
+	if _, err := agentSide.Write([]byte("OK\r\n")); err != nil {
+		t.Fatalf("agentSide Write returned error: %v", err)
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("conn.SetReadDeadline returned error: %v", err)
+	}
+	response := make([]byte, 4)
+	if _, err := io.ReadFull(conn, response); err != nil {
+		t.Fatalf("tcp ReadFull returned error: %v", err)
+	}
+	if !bytes.Equal(response, []byte("OK\r\n")) {
+		t.Fatalf("tcp read = %q, want OK\\r\\n", response)
+	}
+
+	if err := conn.Close(); err != nil {
+		t.Fatalf("conn.Close returned error: %v", err)
+	}
+	select {
+	case <-resolver.releaseGate:
+	case <-time.After(time.Second):
+		t.Fatal("tunnel conn was not closed after tcp close")
+	}
+	if err := owners.Acquire("channel-1", "web"); err != nil {
+		t.Fatalf("ControlOwner acquire after tunnel close returned error: %v", err)
+	}
+	owners.Release("channel-1", "web")
+
+	cancel()
+	select {
+	case err := <-serveErr:
+		if err != nil {
+			t.Fatalf("Serve returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Serve did not return after context cancellation")
+	}
+}
+
 type rfc2217FakeControl struct {
 	session *rfc2217FakeSession
 	events  chan serial.Event
@@ -388,4 +488,33 @@ func (s *rfc2217FakeSession) waitForWrite(t *testing.T, want []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t.Fatalf("writes = %q, want %q", s.writes, want)
+}
+
+type rfc2217FakeTunnelResolver struct {
+	conn        net.Conn
+	opened      chan string
+	releaseGate chan struct{}
+	once        sync.Once
+}
+
+func (r *rfc2217FakeTunnelResolver) OpenRFC2217Tunnel(_ context.Context, channelID string) (net.Conn, error) {
+	r.opened <- channelID
+	return &closeNotifyConn{Conn: r.conn, closeFn: func() {
+		r.once.Do(func() {
+			close(r.releaseGate)
+		})
+	}}, nil
+}
+
+type closeNotifyConn struct {
+	net.Conn
+	closeFn func()
+}
+
+func (c *closeNotifyConn) Close() error {
+	err := c.Conn.Close()
+	if c.closeFn != nil {
+		c.closeFn()
+	}
+	return err
 }

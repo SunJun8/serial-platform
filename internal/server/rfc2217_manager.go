@@ -8,6 +8,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
+	"serial-platform/internal/protocol"
 	"serial-platform/internal/serial"
 	"serial-platform/internal/storage"
 )
@@ -133,10 +136,10 @@ func (m *rfc2217Manager) start(ctx context.Context, channel storage.Channel) err
 
 	listenerCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
-	listener := NewRFC2217ListenerWithResolver(
+	listener := NewRFC2217TunnelListener(
 		netListener,
 		channel.ID,
-		m.srv.rfc2217Resolver(channel),
+		rfc2217ServerTunnelResolver{srv: m.srv, channel: channel},
 		WithRFC2217ControlOwner(m.srv.controlOwner),
 	)
 
@@ -177,6 +180,35 @@ func rfc2217Signature(channel storage.Channel) rfc2217ActiveSignature {
 		port:   channel.RFC2217Port,
 		config: channelDefaultConfig(channel),
 	}
+}
+
+type rfc2217ServerTunnelResolver struct {
+	srv     *Server
+	channel storage.Channel
+}
+
+func (r rfc2217ServerTunnelResolver) OpenRFC2217Tunnel(ctx context.Context, channelID string) (net.Conn, error) {
+	if channelID != r.channel.ID {
+		return nil, fmt.Errorf("channel %s does not match listener channel %s", channelID, r.channel.ID)
+	}
+	return r.srv.OpenRFC2217Tunnel(ctx, r.channel)
+}
+
+func (srv *Server) OpenRFC2217Tunnel(ctx context.Context, channel storage.Channel) (net.Conn, error) {
+	tunnelID := uuid.NewString()
+	message := protocol.OpenTunnel{
+		Type:      protocol.MessageOpenTunnel,
+		TunnelID:  tunnelID,
+		ChannelID: channel.ID,
+		Mode:      protocol.TunnelModeRFC2217,
+	}
+	conn, err := srv.tunnels.WaitAfterRegister(ctx, tunnelID, func() error {
+		return srv.agentRegistry.send(ctx, channel.AgentID, message)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("open rfc2217 tunnel %s for channel %s: %w", tunnelID, channel.ID, err)
+	}
+	return conn, nil
 }
 
 func (srv *Server) rfc2217Resolver(channel storage.Channel) RFC2217Resolver {

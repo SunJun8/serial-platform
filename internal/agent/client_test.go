@@ -194,6 +194,102 @@ func TestClientSendAndReadControlMessages(t *testing.T) {
 	}
 }
 
+func TestClientHandlesRFC2217OpenTunnelWithResolvedControl(t *testing.T) {
+	control := newAgentRFC2217FakeControl()
+	controlMessages := make(chan protocol.MessageType, 4)
+
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/ws/agent":
+			conn, err := websocket.Accept(w, r, nil)
+			if err != nil {
+				return
+			}
+			defer conn.Close(websocket.StatusNormalClosure, "")
+
+			var hello protocol.AgentHello
+			if err := protocol.ReadJSON(r.Context(), conn, &hello); err != nil {
+				return
+			}
+			if err := protocol.WriteJSON(r.Context(), conn, protocol.AgentAccepted{
+				Type:   protocol.MessageAgentAccepted,
+				Status: "active",
+			}); err != nil {
+				return
+			}
+			if err := protocol.WriteJSON(r.Context(), conn, protocol.OpenTunnel{
+				Type:      protocol.MessageOpenTunnel,
+				TunnelID:  "tunnel-1",
+				ChannelID: "channel-1",
+				Mode:      protocol.TunnelModeRFC2217,
+			}); err != nil {
+				return
+			}
+			for {
+				messageType, data, err := conn.Read(r.Context())
+				if err != nil {
+					return
+				}
+				if messageType == websocket.MessageText {
+					var envelope struct {
+						Type protocol.MessageType `json:"type"`
+					}
+					if err := json.Unmarshal(data, &envelope); err == nil {
+						controlMessages <- envelope.Type
+					}
+				}
+			}
+		case "/ws/tunnel/tunnel-1":
+			conn, err := websocket.Accept(w, r, nil)
+			if err != nil {
+				return
+			}
+			defer conn.Close(websocket.StatusNormalClosure, "")
+			_ = conn.Write(r.Context(), websocket.MessageBinary, []byte("AT\r"))
+			control.session.waitForWrite(t, []byte("AT\r"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	client := &agent.Client{Config: agent.Config{
+		ServerURL: httpSrv.URL,
+		AgentID:   "agent-1",
+	}}
+	if _, err := client.Connect(ctx); err != nil {
+		t.Fatalf("Connect returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close(context.Background()) })
+
+	done := make(chan error, 1)
+	go func() {
+		done <- client.HandleControlMessages(ctx, agentRFC2217Resolver{control: control}, agent.TunnelDialer{ServerURL: httpSrv.URL})
+	}()
+
+	control.session.waitForWrite(t, []byte("AT\r"))
+	select {
+	case messageType := <-controlMessages:
+		if messageType != protocol.MessageTunnelOpened {
+			t.Fatalf("control message type = %q, want tunnel_opened", messageType)
+		}
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for tunnel_opened")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != context.Canceled {
+			t.Fatalf("HandleControlMessages returned %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("HandleControlMessages did not return after context cancellation")
+	}
+}
+
 func TestClientFetchChannelConfigsFiltersAgentAndConvertsSerialDefaults(t *testing.T) {
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/channels" {
@@ -671,6 +767,22 @@ type runtimeFakeReconciler struct {
 	devices  []agent.DiscoveredDevice
 	result   agent.ReconcileResult
 	done     chan<- struct{}
+}
+
+type agentRFC2217Resolver struct {
+	control serial.SerialControl
+	config  serial.Config
+}
+
+func (r agentRFC2217Resolver) RFC2217Control(_ context.Context, channelID string) (serial.SerialControl, serial.Config, error) {
+	if channelID != "channel-1" {
+		return nil, serial.Config{}, errors.New("channel not found")
+	}
+	config := r.config
+	if config == (serial.Config{}) {
+		config = serial.DefaultConfig()
+	}
+	return r.control, config, nil
 }
 
 func (r *runtimeFakeReconciler) Reconcile(_ context.Context, channels []agent.ChannelConfig, devices []agent.DiscoveredDevice) agent.ReconcileResult {
