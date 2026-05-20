@@ -66,7 +66,7 @@ func (srv *Server) handleAgentWebSocket(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if err := srv.sendChannelSync(ctx, hello.AgentID); err != nil {
+	if err := srv.sendInitialChannelSync(ctx, agentConn); err != nil {
 		log.Printf("send channel sync to %s: %v", hello.AgentID, err)
 		return
 	}
@@ -75,9 +75,25 @@ func (srv *Server) handleAgentWebSocket(w http.ResponseWriter, r *http.Request) 
 }
 
 func (srv *Server) sendChannelSync(ctx context.Context, agentID string) error {
-	channels, err := srv.db.ListChannels()
+	message, err := srv.channelSyncMessage(agentID)
 	if err != nil {
 		return err
+	}
+	return srv.agentRegistry.send(ctx, agentID, message)
+}
+
+func (srv *Server) sendInitialChannelSync(ctx context.Context, conn AgentConnection) error {
+	message, err := srv.channelSyncMessage(conn.AgentID)
+	if err != nil {
+		return err
+	}
+	return conn.send(ctx, message)
+}
+
+func (srv *Server) channelSyncMessage(agentID string) (protocol.ChannelSync, error) {
+	channels, err := srv.db.ListChannels()
+	if err != nil {
+		return protocol.ChannelSync{}, err
 	}
 	message := protocol.ChannelSync{
 		Type:     protocol.MessageChannelSync,
@@ -89,7 +105,7 @@ func (srv *Server) sendChannelSync(ctx context.Context, agentID string) error {
 		}
 		message.Channels = append(message.Channels, channelConfigMessage(channel))
 	}
-	return srv.agentRegistry.send(ctx, agentID, message)
+	return message, nil
 }
 
 func channelConfigMessage(channel storage.Channel) protocol.ChannelConfigMessage {
