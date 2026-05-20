@@ -120,6 +120,120 @@ func (client *Client) SendLogFrames(ctx context.Context, frames <-chan protocol.
 	}
 }
 
+func (client *Client) SendLogFramesLoop(ctx context.Context, frames <-chan protocol.LogFrame, backoff time.Duration) error {
+	if backoff <= 0 {
+		backoff = time.Second
+	}
+
+	wsURL, err := webSocketURL(client.Config.ServerURL, "/ws/logs")
+	if err != nil {
+		return err
+	}
+
+	var pending protocol.LogFrame
+	hasPending := false
+	for {
+		if !hasPending {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case frame, ok := <-frames:
+				if !ok {
+					return nil
+				}
+				pending = frame
+				hasPending = true
+			}
+		}
+
+		conn, _, err := websocket.Dial(ctx, wsURL, nil)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			log.Printf("connect log stream: %v", err)
+			if err := sleepContext(ctx, backoff); err != nil {
+				return err
+			}
+			continue
+		}
+		connCtx := conn.CloseRead(ctx)
+
+		reconnect := false
+		for {
+			encoded, err := protocol.EncodeLogFrame(pending)
+			if err != nil {
+				_ = conn.Close(websocket.StatusNormalClosure, "")
+				return err
+			}
+			if err := conn.Ping(ctx); err != nil {
+				_ = conn.Close(websocket.StatusNormalClosure, "")
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				log.Printf("ping log stream: %v", err)
+				reconnect = true
+				break
+			}
+			if err := conn.Write(ctx, websocket.MessageBinary, encoded); err != nil {
+				_ = conn.Close(websocket.StatusNormalClosure, "")
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				log.Printf("send log frame: %v", err)
+				reconnect = true
+				break
+			}
+			hasPending = false
+
+			select {
+			case <-ctx.Done():
+				_ = conn.Close(websocket.StatusNormalClosure, "")
+				return ctx.Err()
+			case <-connCtx.Done():
+				reconnect = true
+			default:
+			}
+			if reconnect {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				_ = conn.Close(websocket.StatusNormalClosure, "")
+				return ctx.Err()
+			case <-connCtx.Done():
+				reconnect = true
+			case frame, ok := <-frames:
+				if !ok {
+					_ = conn.Close(websocket.StatusNormalClosure, "")
+					return nil
+				}
+				pending = frame
+				hasPending = true
+			}
+			if reconnect {
+				break
+			}
+		}
+
+		_ = conn.Close(websocket.StatusNormalClosure, "")
+		if err := sleepContext(ctx, backoff); err != nil {
+			return err
+		}
+	}
+}
+
+func sleepContext(ctx context.Context, duration time.Duration) error {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
 type channelConfigResponse struct {
 	ID              string
 	AgentID         string
@@ -255,7 +369,10 @@ func NewRuntime(config RuntimeConfig) *Runtime {
 
 func (runtime *Runtime) Run(ctx context.Context) error {
 	if err := runtime.scan(ctx); err != nil {
-		return err
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		log.Printf("agent runtime scan: %v", err)
 	}
 
 	ticker := time.NewTicker(runtime.scanInterval)
@@ -266,7 +383,10 @@ func (runtime *Runtime) Run(ctx context.Context) error {
 			return ctx.Err()
 		case <-ticker.C:
 			if err := runtime.scan(ctx); err != nil {
-				return err
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				log.Printf("agent runtime scan: %v", err)
 			}
 		}
 	}

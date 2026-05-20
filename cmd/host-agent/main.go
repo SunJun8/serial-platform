@@ -57,7 +57,7 @@ func main() {
 	frames := make(chan protocol.LogFrame, 256)
 	uploader := agent.NewLogUploader(agent.LogUploaderConfig{Out: frames})
 	go func() {
-		if err := client.SendLogFrames(ctx, frames); err != nil && ctx.Err() == nil {
+		if err := client.SendLogFramesLoop(ctx, frames, time.Second); err != nil && ctx.Err() == nil {
 			log.Printf("send log frames: %v", err)
 		}
 	}()

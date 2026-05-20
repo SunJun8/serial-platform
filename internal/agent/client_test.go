@@ -3,6 +3,7 @@ package agent_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -250,6 +251,109 @@ func TestClientSendLogFramesReturnsCloseErrorWhenNoFramesSent(t *testing.T) {
 	}
 }
 
+func TestClientSendLogFramesLoopReconnectsAfterDisconnect(t *testing.T) {
+	received := make(chan protocol.LogFrame, 2)
+	firstDisconnected := make(chan struct{})
+
+	var mu sync.Mutex
+	connections := 0
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ws/logs" {
+			http.NotFound(w, r)
+			return
+		}
+
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "")
+
+		mu.Lock()
+		connections++
+		connection := connections
+		mu.Unlock()
+
+		messageType, payload, err := conn.Read(r.Context())
+		if err != nil {
+			return
+		}
+		if messageType != websocket.MessageBinary {
+			return
+		}
+		frame, err := protocol.DecodeLogFrame(payload)
+		if err != nil {
+			return
+		}
+		received <- frame
+		if connection == 1 {
+			close(firstDisconnected)
+			conn.CloseNow()
+			return
+		}
+	}))
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	frames := make(chan protocol.LogFrame, 2)
+	client := &agent.Client{Config: agent.Config{ServerURL: httpSrv.URL}}
+	done := make(chan error, 1)
+	go func() {
+		done <- client.SendLogFramesLoop(ctx, frames, time.Millisecond)
+	}()
+
+	frames <- testLogFrame(1, "first\n")
+	select {
+	case <-firstDisconnected:
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for first log connection to disconnect")
+	}
+	frames <- testLogFrame(2, "second\n")
+	close(frames)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("SendLogFramesLoop returned error: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for SendLogFramesLoop to finish")
+	}
+
+	gotFirst := receiveLogFrame(t, ctx, received)
+	gotSecond := receiveLogFrame(t, ctx, received)
+	if gotFirst.Seq != 1 || string(gotFirst.Payload) != "first\n" {
+		t.Fatalf("first received frame = %+v, want seq 1 payload first", gotFirst)
+	}
+	if gotSecond.Seq != 2 || string(gotSecond.Payload) != "second\n" {
+		t.Fatalf("second received frame = %+v, want seq 2 payload second", gotSecond)
+	}
+}
+
+func TestClientSendLogFramesLoopStopsWhenFramesCloseBeforeReconnect(t *testing.T) {
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ws/logs" {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "temporary outage", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	frames := make(chan protocol.LogFrame)
+	close(frames)
+
+	client := &agent.Client{Config: agent.Config{ServerURL: httpSrv.URL}}
+	if err := client.SendLogFramesLoop(ctx, frames, time.Millisecond); err != nil {
+		t.Fatalf("SendLogFramesLoop returned error: %v", err)
+	}
+}
+
 func TestRuntimeScansAndForwardsReconciledEvents(t *testing.T) {
 	events := make(chan serial.Event)
 	forwarded := make(chan serial.Event, 1)
@@ -306,6 +410,67 @@ func TestRuntimeScansAndForwardsReconciledEvents(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("runtime did not forward reconciled event stream")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != context.Canceled {
+			t.Fatalf("Run error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not stop after context cancellation")
+	}
+}
+
+func TestRuntimeContinuesAfterTransientScanErrors(t *testing.T) {
+	reconciled := make(chan struct{}, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	discoverCalls := 0
+	sourceCalls := 0
+	runtime := agent.NewRuntime(agent.RuntimeConfig{
+		ScanInterval: 10 * time.Millisecond,
+		Discover: func(agent.DiscoveryConfig) ([]agent.DiscoveredDevice, error) {
+			discoverCalls++
+			if discoverCalls == 1 {
+				return nil, errors.New("temporary discover failure")
+			}
+			return []agent.DiscoveredDevice{{DevName: "/dev/ttyUSB0", IDPath: "id-path-1", PermissionOK: true}}, nil
+		},
+		ChannelSource: func(context.Context) ([]agent.ChannelConfig, error) {
+			sourceCalls++
+			if sourceCalls == 1 {
+				return nil, errors.New("temporary channel source failure")
+			}
+			return []agent.ChannelConfig{{
+				ID:            "channel-1",
+				IDPath:        "id-path-1",
+				DefaultConfig: serial.DefaultConfig(),
+			}}, nil
+		},
+		Reconciler: &runtimeFakeReconciler{done: reconciled},
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runtime.Run(ctx)
+	}()
+
+	select {
+	case <-reconciled:
+	case err := <-done:
+		t.Fatalf("Run returned before recovering from transient scan errors: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not reconcile after transient scan errors")
+	}
+
+	if discoverCalls < 3 {
+		t.Fatalf("discover calls = %d, want at least 3", discoverCalls)
+	}
+	if sourceCalls < 2 {
+		t.Fatalf("channel source calls = %d, want at least 2", sourceCalls)
 	}
 
 	cancel()
@@ -381,6 +546,28 @@ func TestRuntimeReadsChannelSourceOnEachScan(t *testing.T) {
 	}
 	if got := calls[1]; len(got) != 1 || got[0].ID != "channel-2" || got[0].DefaultConfig.Baud != 57600 {
 		t.Fatalf("second reconcile channels = %+v, want channel-2 at 57600", got)
+	}
+}
+
+func testLogFrame(seq uint64, payload string) protocol.LogFrame {
+	return protocol.LogFrame{
+		ChannelID:   "channel-1",
+		Seq:         seq,
+		TimestampNS: time.Unix(1700000000, int64(seq)).UnixNano(),
+		Direction:   protocol.DirectionRX,
+		Flags:       protocol.FlagRaw,
+		Payload:     []byte(payload),
+	}
+}
+
+func receiveLogFrame(t *testing.T, ctx context.Context, frames <-chan protocol.LogFrame) protocol.LogFrame {
+	t.Helper()
+	select {
+	case frame := <-frames:
+		return frame
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for log frame")
+		return protocol.LogFrame{}
 	}
 }
 
