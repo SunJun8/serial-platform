@@ -44,6 +44,7 @@ func TestServeRFC2217StartsListenerForConfiguredChannel(t *testing.T) {
 		DefaultDataBits: 8,
 		DefaultParity:   "N",
 		DefaultStopBits: 1,
+		DefaultFlow:     "rtscts",
 		UpdatedAt:       time.Now().UTC(),
 	}
 	if err := db.UpsertChannel(channel); err != nil {
@@ -100,6 +101,9 @@ func TestServeRFC2217StartsListenerForConfiguredChannel(t *testing.T) {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	if backend.Config().Flow != "none" {
+		t.Fatalf("backend flow = %q, want none", backend.Config().Flow)
 	}
 }
 

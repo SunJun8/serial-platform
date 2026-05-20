@@ -93,12 +93,38 @@ func TestChannelAPIPatchRejectsInvalidSerialConfig(t *testing.T) {
 		{name: "unknown parity", body: `{"default_parity":"X"}`},
 		{name: "unknown stop bits", body: `{"default_stop_bits":3}`},
 		{name: "unknown flow", body: `{"default_flow":"xonxoff"}`},
+		{name: "unsupported rtscts flow", body: `{"default_flow":"rtscts"}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			resp, respBody := patchJSON(t, httpSrv.URL+"/api/channels/channel-1", tt.body)
 			if resp.StatusCode != http.StatusBadRequest {
 				t.Fatalf("PATCH /api/channels status = %s, body = %s", resp.Status, respBody)
+			}
+		})
+	}
+}
+
+func TestChannelAPICreateRejectsInvalidSerialConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "explicit zero baud", body: `{"agent_id":"agent-1","rfc2217_port":7001,"default_baud":0}`},
+		{name: "explicit zero data bits", body: `{"agent_id":"agent-1","rfc2217_port":7001,"default_data_bits":0}`},
+		{name: "explicit zero stop bits", body: `{"agent_id":"agent-1","rfc2217_port":7001,"default_stop_bits":0}`},
+		{name: "unsupported rtscts flow", body: `{"agent_id":"agent-1","rfc2217_port":7001,"default_flow":"rtscts"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := newAPITestDB(t)
+			srv := server.New(server.ServerConfig{DB: db})
+			httpSrv := httptest.NewServer(srv)
+			t.Cleanup(httpSrv.Close)
+
+			resp, respBody := postJSON(t, httpSrv.URL+"/api/channels", tt.body)
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("POST /api/channels status = %s, body = %s", resp.Status, respBody)
 			}
 		})
 	}
@@ -216,6 +242,38 @@ func TestCandidateConfirmCreatesChannelAndDeletesCandidate(t *testing.T) {
 	}
 	if len(candidates) != 0 {
 		t.Fatalf("candidate was not deleted: %+v", candidates)
+	}
+}
+
+func TestCandidateConfirmRejectsInvalidSerialConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "explicit zero baud", body: `{"alias":"loopback","role":"console","rfc2217_port":7001,"default_baud":0}`},
+		{name: "explicit zero data bits", body: `{"alias":"loopback","role":"console","rfc2217_port":7001,"default_data_bits":0}`},
+		{name: "explicit zero stop bits", body: `{"alias":"loopback","role":"console","rfc2217_port":7001,"default_stop_bits":0}`},
+		{name: "unsupported rtscts flow", body: `{"alias":"loopback","role":"console","rfc2217_port":7001,"default_flow":"rtscts"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := newAPITestDB(t)
+			candidate := apiTestCandidate("cand-1")
+			if err := db.UpsertCandidate(candidate); err != nil {
+				t.Fatalf("UpsertCandidate returned error: %v", err)
+			}
+			srv := server.New(server.ServerConfig{DB: db})
+			httpSrv := httptest.NewServer(srv)
+			t.Cleanup(httpSrv.Close)
+
+			resp, respBody := postJSON(t, httpSrv.URL+"/api/candidates/cand-1/confirm", tt.body)
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("confirm status = %s, body = %s", resp.Status, respBody)
+			}
+			if _, err := db.GetCandidate("cand-1"); err != nil {
+				t.Fatalf("GetCandidate after failed confirm returned error: %v", err)
+			}
+		})
 	}
 }
 

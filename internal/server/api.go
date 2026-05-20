@@ -23,10 +23,10 @@ type channelCreateRequest struct {
 	SysfsDevpath    string `json:"sysfs_devpath"`
 	Interface       string `json:"interface"`
 	RFC2217Port     int    `json:"rfc2217_port"`
-	DefaultBaud     int    `json:"default_baud"`
-	DefaultDataBits int    `json:"default_data_bits"`
+	DefaultBaud     *int   `json:"default_baud"`
+	DefaultDataBits *int   `json:"default_data_bits"`
 	DefaultParity   string `json:"default_parity"`
-	DefaultStopBits int    `json:"default_stop_bits"`
+	DefaultStopBits *int   `json:"default_stop_bits"`
 	DefaultFlow     string `json:"default_flow"`
 }
 
@@ -51,10 +51,10 @@ type candidateConfirmRequest struct {
 	Alias           string `json:"alias"`
 	Role            string `json:"role"`
 	RFC2217Port     int    `json:"rfc2217_port"`
-	DefaultBaud     int    `json:"default_baud"`
-	DefaultDataBits int    `json:"default_data_bits"`
+	DefaultBaud     *int   `json:"default_baud"`
+	DefaultDataBits *int   `json:"default_data_bits"`
 	DefaultParity   string `json:"default_parity"`
-	DefaultStopBits int    `json:"default_stop_bits"`
+	DefaultStopBits *int   `json:"default_stop_bits"`
 	DefaultFlow     string `json:"default_flow"`
 }
 
@@ -356,19 +356,19 @@ func normalizeInterface(interfaceName string) string {
 	return "if" + interfaceName
 }
 
-func validateSerialConfig(rfc2217Port int, baud, dataBits int, parity string, stopBits int, flow string) (int, int, string, int, string, error) {
-	baud, dataBits, parity, stopBits, flow = serialConfigDefaults(baud, dataBits, parity, stopBits, flow)
+func validateSerialConfig(rfc2217Port int, baud, dataBits *int, parity string, stopBits *int, flow string) (int, int, string, int, string, error) {
+	defaultBaud, defaultDataBits, defaultParity, defaultStopBits, defaultFlow := serialConfigDefaults(baud, dataBits, parity, stopBits, flow)
 	if err := validateChannelConfig(storage.Channel{
 		RFC2217Port:     rfc2217Port,
-		DefaultBaud:     baud,
-		DefaultDataBits: dataBits,
-		DefaultParity:   parity,
-		DefaultStopBits: stopBits,
-		DefaultFlow:     flow,
+		DefaultBaud:     defaultBaud,
+		DefaultDataBits: defaultDataBits,
+		DefaultParity:   defaultParity,
+		DefaultStopBits: defaultStopBits,
+		DefaultFlow:     defaultFlow,
 	}); err != nil {
 		return 0, 0, "", 0, "", err
 	}
-	return baud, dataBits, parity, stopBits, flow, nil
+	return defaultBaud, defaultDataBits, defaultParity, defaultStopBits, defaultFlow, nil
 }
 
 func validateChannelConfig(channel storage.Channel) error {
@@ -389,25 +389,25 @@ func validateChannelConfig(channel storage.Channel) error {
 	if channel.DefaultStopBits != 1 && channel.DefaultStopBits != 2 {
 		return fmt.Errorf("default_stop_bits must be 1 or 2")
 	}
-	if channel.DefaultFlow != "none" && channel.DefaultFlow != "rtscts" {
-		return fmt.Errorf("default_flow must be none or rtscts")
+	if channel.DefaultFlow != "none" {
+		return fmt.Errorf("default_flow must be none")
 	}
 	return nil
 }
 
-func serialConfigDefaults(baud, dataBits int, parity string, stopBits int, flow string) (int, int, string, int, string) {
-	return defaultInt(baud, 115200),
-		defaultInt(dataBits, 8),
+func serialConfigDefaults(baud, dataBits *int, parity string, stopBits *int, flow string) (int, int, string, int, string) {
+	return defaultOptionalInt(baud, 115200),
+		defaultOptionalInt(dataBits, 8),
 		defaultString(parity, "N"),
-		defaultInt(stopBits, 1),
+		defaultOptionalInt(stopBits, 1),
 		defaultString(flow, "none")
 }
 
-func defaultInt(value int, fallback int) int {
-	if value == 0 {
+func defaultOptionalInt(value *int, fallback int) int {
+	if value == nil {
 		return fallback
 	}
-	return value
+	return *value
 }
 
 func defaultString(value string, fallback string) string {

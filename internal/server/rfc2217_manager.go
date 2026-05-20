@@ -150,5 +150,6 @@ func channelDefaultConfig(channel storage.Channel) serial.Config {
 	if channel.DefaultStopBits > 0 {
 		config.StopBits = channel.DefaultStopBits
 	}
+	config.Flow = "none"
 	return config
 }
