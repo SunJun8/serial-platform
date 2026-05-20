@@ -25,6 +25,36 @@ func main() {
 }
 
 func run(args []string) error {
+	return runWithDeps(args, centralServerDeps{
+		notifyContext: func(parent context.Context) (context.Context, context.CancelFunc) {
+			return signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
+		},
+		openDB: storage.Open,
+		closeDB: func(db *storage.DB) error {
+			return db.Close()
+		},
+		newServer: func(db *storage.DB, logDir string) centralServer {
+			return server.New(server.ServerConfig{
+				DB:     db,
+				LogDir: logDir,
+			})
+		},
+	})
+}
+
+type centralServer interface {
+	http.Handler
+	ServeRFC2217(context.Context, string) error
+}
+
+type centralServerDeps struct {
+	notifyContext func(context.Context) (context.Context, context.CancelFunc)
+	openDB        func(string) (*storage.DB, error)
+	closeDB       func(*storage.DB) error
+	newServer     func(*storage.DB, string) centralServer
+}
+
+func runWithDeps(args []string, deps centralServerDeps) error {
 	flags := flag.NewFlagSet("central-server", flag.ContinueOnError)
 	listen := flags.String("listen", ":8080", "HTTP listen address")
 	rfc2217Bind := flags.String("rfc2217-bind", "0.0.0.0", "RFC2217 listen host")
@@ -37,22 +67,19 @@ func run(args []string) error {
 		return fmt.Errorf("create data dir: %w", err)
 	}
 
-	db, err := storage.Open(filepath.Join(*dataDir, "meta.db"))
+	db, err := deps.openDB(filepath.Join(*dataDir, "meta.db"))
 	if err != nil {
 		return fmt.Errorf("open metadata db: %w", err)
 	}
 	defer func() {
-		if err := db.Close(); err != nil {
+		if err := deps.closeDB(db); err != nil {
 			log.Printf("close metadata db: %v", err)
 		}
 	}()
 
-	handler := server.New(server.ServerConfig{
-		DB:     db,
-		LogDir: filepath.Join(*dataDir, "logs"),
-	})
+	handler := deps.newServer(db, filepath.Join(*dataDir, "logs"))
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := deps.notifyContext(context.Background())
 	defer stop()
 
 	listener, err := net.Listen("tcp", *listen)
@@ -60,16 +87,27 @@ func run(args []string) error {
 		return fmt.Errorf("listen: %w", err)
 	}
 
-	httpServer := &http.Server{Handler: handler}
-	go func() {
-		if err := handler.ServeRFC2217(ctx, *rfc2217Bind); err != nil {
-			log.Printf("rfc2217 listener stopped: %v", err)
+	if readyFile := os.Getenv("SERIAL_PLATFORM_CENTRAL_READY_FILE"); readyFile != "" {
+		if err := os.WriteFile(readyFile, []byte(listener.Addr().String()+"\n"), 0o600); err != nil {
+			_ = listener.Close()
+			return fmt.Errorf("write ready file: %w", err)
 		}
+	}
+
+	httpServer := &http.Server{Handler: handler}
+	rfc2217Done := make(chan error, 1)
+	go func() {
+		rfc2217Done <- handler.ServeRFC2217(ctx, *rfc2217Bind)
 	}()
 
 	log.Printf("central-server %s %s %s listening on %s", buildinfo.Version, buildinfo.Commit, buildinfo.Date, listener.Addr())
-	if err := server.ServeHTTPWithShutdown(ctx, httpServer, listener, 5*time.Second); err != nil {
-		return fmt.Errorf("listen and serve: %w", err)
+	serveErr := server.ServeHTTPWithShutdown(ctx, httpServer, listener, 5*time.Second)
+	stop()
+	if err := <-rfc2217Done; err != nil {
+		log.Printf("rfc2217 listener stopped: %v", err)
+	}
+	if serveErr != nil {
+		return fmt.Errorf("listen and serve: %w", serveErr)
 	}
 	return nil
 }

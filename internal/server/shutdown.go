@@ -24,10 +24,17 @@ func ServeHTTPWithShutdown(ctx context.Context, srv *http.Server, listener net.L
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
-		if err := srv.Shutdown(shutdownCtx); err != nil {
+		shutdownErr := srv.Shutdown(shutdownCtx)
+		if shutdownErr != nil {
 			_ = srv.Close()
 		}
 		err := <-errCh
+		if shutdownErr != nil {
+			if err != nil {
+				return errors.Join(shutdownErr, err)
+			}
+			return shutdownErr
+		}
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
