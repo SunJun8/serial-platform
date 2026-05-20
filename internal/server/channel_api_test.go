@@ -38,12 +38,34 @@ func TestChannelAPICreatesAndUpdatesChannel(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("PATCH /api/channels status = %s, body = %s", resp.Status, respBody)
 	}
+	got, err := db.GetChannel(created.ID)
+	if err != nil {
+		t.Fatalf("GetChannel returned error: %v", err)
+	}
+	if got.Alias != "renamed" || got.DefaultBaud != 921600 {
+		t.Fatalf("channel = %+v, want alias renamed and default baud 921600", got)
+	}
 }
 
 func TestCandidateConfirmCreatesChannelAndDeletesCandidate(t *testing.T) {
 	db := newAPITestDB(t)
 	now := time.Unix(10, 0).UTC()
-	if err := db.UpsertCandidate(storage.Candidate{ID: "cand-1", AgentID: "agent-1", DevName: "/dev/ttyUSB0", IDPath: "id-path", IDPathTag: "id-tag", FirstSeen: now, LastSeen: now}); err != nil {
+	candidate := storage.Candidate{
+		ID:           "cand-1",
+		AgentID:      "agent-1",
+		DevName:      "/dev/ttyUSB0",
+		IDPath:       "id-path",
+		IDPathTag:    "id-tag",
+		SysfsDevpath: "/devices/pci/ttyUSB0",
+		Interface:    "02",
+		VID:          "1a86",
+		PID:          "7523",
+		Serial:       "serial-a",
+		Driver:       "ch341",
+		FirstSeen:    now,
+		LastSeen:     now,
+	}
+	if err := db.UpsertCandidate(candidate); err != nil {
 		t.Fatalf("UpsertCandidate returned error: %v", err)
 	}
 	srv := server.New(server.ServerConfig{DB: db})
@@ -53,6 +75,25 @@ func TestCandidateConfirmCreatesChannelAndDeletesCandidate(t *testing.T) {
 	resp, respBody := postJSON(t, httpSrv.URL+"/api/candidates/cand-1/confirm", `{"alias":"loopback","role":"console","rfc2217_port":7001,"default_baud":115200}`)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("confirm status = %s, body = %s", resp.Status, respBody)
+	}
+	var created storage.Channel
+	if err := json.Unmarshal(respBody, &created); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if created.ID == "" {
+		t.Fatalf("created channel ID is empty")
+	}
+	channel, err := db.GetChannel(created.ID)
+	if err != nil {
+		t.Fatalf("GetChannel returned error: %v", err)
+	}
+	if channel.AgentID != candidate.AgentID ||
+		channel.DevName != candidate.DevName ||
+		channel.IDPath != candidate.IDPath ||
+		channel.IDPathTag != candidate.IDPathTag ||
+		channel.SysfsDevpath != candidate.SysfsDevpath ||
+		channel.AutoName != "agent-1.if02" {
+		t.Fatalf("channel = %+v, candidate = %+v", channel, candidate)
 	}
 	candidates, err := db.ListCandidates()
 	if err != nil {

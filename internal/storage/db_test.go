@@ -170,16 +170,34 @@ func TestDBUpsertsCandidatesAndConfirmsChannel(t *testing.T) {
 		t.Fatalf("candidates = %+v", candidates)
 	}
 
+	updatedCandidate := candidate
+	updatedCandidate.DevName = "/dev/ttyUSB1"
+	updatedCandidate.IDPath = "pci-0000:00:14.0-usb-0:1.3:1.0"
+	updatedCandidate.IDPathTag = "pci-0000_00_14_0-usb-0_1_3_1_0"
+	updatedCandidate.SysfsDevpath = "/devices/pci/ttyUSB1"
+	updatedCandidate.Serial = "serial-b"
+	updatedCandidate.LastSeen = now.Add(time.Minute)
+	if err := db.UpsertCandidate(updatedCandidate); err != nil {
+		t.Fatalf("UpsertCandidate update returned error: %v", err)
+	}
+	candidates, err = db.ListCandidates()
+	if err != nil {
+		t.Fatalf("ListCandidates returned error: %v", err)
+	}
+	if len(candidates) != 1 || candidates[0].DevName != updatedCandidate.DevName || candidates[0].Serial != updatedCandidate.Serial {
+		t.Fatalf("updated candidates = %+v", candidates)
+	}
+
 	channel := Channel{
 		ID:              "channel-1",
 		AgentID:         "agent-1",
 		AutoName:        "agent-1.if00",
 		Alias:           "loopback",
 		Role:            "console",
-		DevName:         "/dev/ttyUSB0",
-		IDPath:          candidate.IDPath,
-		IDPathTag:       candidate.IDPathTag,
-		SysfsDevpath:    candidate.SysfsDevpath,
+		DevName:         updatedCandidate.DevName,
+		IDPath:          updatedCandidate.IDPath,
+		IDPathTag:       updatedCandidate.IDPathTag,
+		SysfsDevpath:    updatedCandidate.SysfsDevpath,
 		RFC2217Port:     7001,
 		Status:          ChannelStatusOffline,
 		DefaultBaud:     115200,
@@ -192,7 +210,7 @@ func TestDBUpsertsCandidatesAndConfirmsChannel(t *testing.T) {
 	if err := db.UpsertChannel(channel); err != nil {
 		t.Fatalf("UpsertChannel returned error: %v", err)
 	}
-	if err := db.DeleteCandidate(candidate.ID); err != nil {
+	if err := db.DeleteCandidate(updatedCandidate.ID); err != nil {
 		t.Fatalf("DeleteCandidate returned error: %v", err)
 	}
 	candidates, err = db.ListCandidates()
@@ -215,14 +233,28 @@ func TestDBUpdatesChannelStatusAndConfig(t *testing.T) {
 	if err := db.UpsertChannel(channel); err != nil {
 		t.Fatalf("UpsertChannel returned error: %v", err)
 	}
-	if err := db.UpdateChannelStatus("channel-1", ChannelStatusError, "/dev/ttyUSB0", "permission denied", time.Unix(2, 0).UTC()); err != nil {
-		t.Fatalf("UpdateChannelStatus returned error: %v", err)
-	}
 	got, err := db.GetChannel("channel-1")
 	if err != nil {
 		t.Fatalf("GetChannel returned error: %v", err)
 	}
-	if got.Status != ChannelStatusError || got.ErrorMessage != "permission denied" || got.DevName != "/dev/ttyUSB0" {
+	if got.DefaultFlow != channel.DefaultFlow {
+		t.Fatalf("DefaultFlow = %q, want %q", got.DefaultFlow, channel.DefaultFlow)
+	}
+	channels, err := db.ListChannels()
+	if err != nil {
+		t.Fatalf("ListChannels returned error: %v", err)
+	}
+	if len(channels) != 1 || channels[0].DefaultFlow != channel.DefaultFlow {
+		t.Fatalf("channels = %+v", channels)
+	}
+	if err := db.UpdateChannelStatus("channel-1", ChannelStatusError, "/dev/ttyUSB0", "permission denied", time.Unix(2, 0).UTC()); err != nil {
+		t.Fatalf("UpdateChannelStatus returned error: %v", err)
+	}
+	got, err = db.GetChannel("channel-1")
+	if err != nil {
+		t.Fatalf("GetChannel returned error: %v", err)
+	}
+	if got.Status != ChannelStatusError || got.ErrorMessage != "permission denied" || got.DevName != "/dev/ttyUSB0" || got.DefaultFlow != channel.DefaultFlow {
 		t.Fatalf("channel = %+v", got)
 	}
 }
@@ -242,7 +274,7 @@ func testChannel(id string) Channel {
 		DefaultDataBits: 8,
 		DefaultParity:   "N",
 		DefaultStopBits: 1,
-		DefaultFlow:     "none",
+		DefaultFlow:     "rtscts",
 		UpdatedAt:       time.Unix(1, 0).UTC(),
 	}
 }
