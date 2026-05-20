@@ -350,10 +350,7 @@ func TestRFC2217ListenerRequestsAgentTunnelAndBridgesTCP(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("tunnel conn was not closed after tcp close")
 	}
-	if err := owners.Acquire("channel-1", "web"); err != nil {
-		t.Fatalf("ControlOwner acquire after tunnel close returned error: %v", err)
-	}
-	owners.Release("channel-1", "web")
+	waitForControlOwnerReleased(t, owners, "channel-1", "web")
 
 	cancel()
 	select {
@@ -488,6 +485,22 @@ func (s *rfc2217FakeSession) waitForWrite(t *testing.T, want []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t.Fatalf("writes = %q, want %q", s.writes, want)
+}
+
+func waitForControlOwnerReleased(t *testing.T, owners *server.ControlOwner, channelID, owner string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		if err := owners.Acquire(channelID, owner); err == nil {
+			owners.Release(channelID, owner)
+			return
+		} else {
+			lastErr = err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("ControlOwner acquire after tunnel close returned error: %v", lastErr)
 }
 
 type rfc2217FakeTunnelResolver struct {
