@@ -27,11 +27,14 @@ type DiscoveredDevice struct {
 	Product      string
 	PermissionOK bool
 	ErrorMessage string
+	Error        error `json:"-"`
 }
 
 type UdevRunner interface {
 	Info(devName string) (string, error)
 }
+
+type PermissionChecker func(path string) error
 
 type ExecUdevRunner struct{}
 
@@ -44,9 +47,10 @@ func (ExecUdevRunner) Info(devName string) (string, error) {
 }
 
 type DiscoveryConfig struct {
-	DevDir string
-	Udev   UdevRunner
-	User   string
+	DevDir            string
+	Udev              UdevRunner
+	User              string
+	PermissionChecker PermissionChecker
 }
 
 func DiscoverDevices(config DiscoveryConfig) ([]DiscoveredDevice, error) {
@@ -57,6 +61,10 @@ func DiscoverDevices(config DiscoveryConfig) ([]DiscoveredDevice, error) {
 	udev := config.Udev
 	if udev == nil {
 		udev = ExecUdevRunner{}
+	}
+	checkPermission := config.PermissionChecker
+	if checkPermission == nil {
+		checkPermission = checkDevicePermission
 	}
 
 	paths := make([]string, 0)
@@ -71,13 +79,20 @@ func DiscoverDevices(config DiscoveryConfig) ([]DiscoveredDevice, error) {
 
 	devices := make([]DiscoveredDevice, 0, len(paths))
 	for _, path := range paths {
+		permissionErr := normalizePermissionError(checkPermission(path))
+		permissionOK := permissionErr == nil
 		props, err := udev.Info(path)
 		if err != nil {
-			devices = append(devices, DiscoveredDevice{
+			device := DiscoveredDevice{
 				DevName:      path,
-				PermissionOK: canReadWrite(path),
+				PermissionOK: permissionOK,
 				ErrorMessage: err.Error(),
-			})
+				Error:        err,
+			}
+			if !permissionOK {
+				device.Error = errors.Join(err, permissionErr)
+			}
+			devices = append(devices, device)
 			continue
 		}
 		identity := topology.ParseUdevProperties(props)
@@ -97,23 +112,37 @@ func DiscoverDevices(config DiscoveryConfig) ([]DiscoveredDevice, error) {
 			Driver:       identity.Driver,
 			Manufacturer: identity.Manufacturer,
 			Product:      identity.Product,
-			PermissionOK: canReadWrite(path),
+			PermissionOK: permissionOK,
 		}
-		if !device.PermissionOK {
+		if !permissionOK {
+			device.Error = permissionErr
+		}
+		if errors.Is(permissionErr, ErrDevicePermission) {
 			device.ErrorMessage = PermissionAdvice(path, config.User)
+		} else if permissionErr != nil {
+			device.ErrorMessage = permissionErr.Error()
 		}
 		devices = append(devices, device)
 	}
 	return devices, nil
 }
 
-func canReadWrite(path string) bool {
-	file, err := os.OpenFile(path, os.O_RDWR|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return false
+func checkDevicePermission(path string) error {
+	if _, err := os.Stat(path); err != nil {
+		return err
 	}
-	_ = file.Close()
-	return true
+	const readWriteAccess = 0x6 // R_OK | W_OK for access(2).
+	return syscall.Access(path, readWriteAccess)
+}
+
+func normalizePermissionError(err error) error {
+	if err == nil || errors.Is(err, ErrDevicePermission) {
+		return err
+	}
+	if errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM) {
+		return fmt.Errorf("%w: %s", ErrDevicePermission, err)
+	}
+	return err
 }
 
 func PermissionAdvice(devName, user string) string {
