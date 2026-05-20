@@ -60,7 +60,7 @@ func (r *TunnelRegistry) WaitAfterRegister(ctx context.Context, tunnelID string,
 	}
 	if afterRegister != nil {
 		if err := afterRegister(); err != nil {
-			r.cancelWaiter(tunnelID, waiter)
+			r.cancelWaiterAndCloseAttached(tunnelID, waiter)
 			return nil, err
 		}
 	}
@@ -120,6 +120,18 @@ func (r *TunnelRegistry) cancelWaiter(tunnelID string, waiter chan net.Conn) {
 		close(waiter)
 	}
 	r.mu.Unlock()
+}
+
+func (r *TunnelRegistry) cancelWaiterAndCloseAttached(tunnelID string, waiter chan net.Conn) {
+	r.cancelWaiter(tunnelID, waiter)
+
+	select {
+	case conn, ok := <-waiter:
+		if ok {
+			_ = conn.Close()
+		}
+	default:
+	}
 }
 
 func (r *TunnelRegistry) Attach(tunnelID string, conn net.Conn) error {

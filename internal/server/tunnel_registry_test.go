@@ -67,6 +67,36 @@ func TestTunnelRegistryWaitTimesOut(t *testing.T) {
 	}
 }
 
+func TestTunnelRegistryWaitAfterRegisterClosesAttachedConnWhenCallbackFails(t *testing.T) {
+	registry := NewTunnelRegistry(time.Second)
+	afterRegisterErr := errors.New("send open tunnel failed")
+	peer, attached := net.Pipe()
+	t.Cleanup(func() { _ = peer.Close() })
+
+	conn, err := registry.WaitAfterRegister(context.Background(), "tunnel-1", func() error {
+		if err := registry.Attach("tunnel-1", attached); err != nil {
+			t.Fatalf("Attach returned error: %v", err)
+		}
+		return afterRegisterErr
+	})
+	if !errors.Is(err, afterRegisterErr) {
+		t.Fatalf("WaitAfterRegister error = %v, want %v", err, afterRegisterErr)
+	}
+	if conn != nil {
+		t.Fatalf("WaitAfterRegister conn = %v, want nil", conn)
+	}
+	if err := peer.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		if errors.Is(err, io.ErrClosedPipe) {
+			return
+		}
+		t.Fatalf("peer SetReadDeadline returned unexpected error: %v", err)
+	}
+	var one [1]byte
+	if _, err := peer.Read(one[:]); err == nil {
+		t.Fatal("peer Read returned nil error, want attached tunnel conn closed")
+	}
+}
+
 func TestTunnelWebSocketConnCloseUsesNetConnClose(t *testing.T) {
 	accepted := make(chan *WSByteConn, 1)
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
