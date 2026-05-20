@@ -55,14 +55,13 @@ type Reconciler struct {
 }
 
 type managedWorker struct {
-	worker  *serial.Worker
+	control serial.SerialControl
 	backend serial.Backend
 	cancel  context.CancelFunc
 	done    <-chan struct{}
 	devName string
 	idPath  string
 	config  serial.Config
-	events  <-chan serial.Event
 }
 
 type workerBackend struct {
@@ -76,6 +75,201 @@ func (b *workerBackend) Close() error {
 		b.closeErr = b.Backend.Close()
 	})
 	return b.closeErr
+}
+
+type managedWorkerControl struct {
+	worker      *serial.Worker
+	broadcaster *workerEventBroadcaster
+
+	mu      sync.Mutex
+	session *managedWorkerControlSession
+}
+
+func (c *managedWorkerControl) OpenControlSession(ctx context.Context, owner string) (serial.ControlSession, error) {
+	session, err := c.worker.OpenControlSession(ctx, owner)
+	if err != nil {
+		return nil, err
+	}
+	wrapped := &managedWorkerControlSession{
+		ControlSession: session,
+		control:        c,
+	}
+	c.mu.Lock()
+	c.session = wrapped
+	c.mu.Unlock()
+	return wrapped, nil
+}
+
+func (c *managedWorkerControl) Events() <-chan serial.Event {
+	events, cancel := c.broadcaster.Subscribe()
+	c.mu.Lock()
+	session := c.session
+	c.mu.Unlock()
+	if session != nil {
+		session.addEventCancel(cancel)
+	}
+	return events
+}
+
+type managedWorkerControlSession struct {
+	serial.ControlSession
+	control      *managedWorkerControl
+	mu           sync.Mutex
+	closed       bool
+	eventCancels []func()
+}
+
+func (s *managedWorkerControlSession) Close() error {
+	s.mu.Lock()
+	eventCancels := append([]func(){}, s.eventCancels...)
+	s.eventCancels = nil
+	alreadyClosed := s.closed
+	s.closed = true
+	s.mu.Unlock()
+
+	if !alreadyClosed {
+		for _, cancel := range eventCancels {
+			cancel()
+		}
+		s.control.clearSession(s)
+	}
+	return s.ControlSession.Close()
+}
+
+func (s *managedWorkerControlSession) addEventCancel(cancel func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		cancel()
+		return
+	}
+	s.eventCancels = append(s.eventCancels, cancel)
+}
+
+func (c *managedWorkerControl) clearSession(session *managedWorkerControlSession) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.session == session {
+		c.session = nil
+	}
+}
+
+type workerEventBroadcaster struct {
+	ctx    context.Context
+	source <-chan serial.Event
+
+	mu          sync.Mutex
+	subscribers map[*workerEventSubscription]struct{}
+	closed      bool
+}
+
+type workerEventSubscription struct {
+	events chan serial.Event
+	done   chan struct{}
+	once   sync.Once
+}
+
+func newWorkerEventSubscription() *workerEventSubscription {
+	return &workerEventSubscription{
+		events: make(chan serial.Event, 64),
+		done:   make(chan struct{}),
+	}
+}
+
+func (s *workerEventSubscription) cancel() {
+	s.once.Do(func() {
+		close(s.done)
+	})
+}
+
+func (s *workerEventSubscription) send(ctx context.Context, event serial.Event) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-s.done:
+		return true
+	case s.events <- event:
+		return true
+	}
+}
+
+func newWorkerEventBroadcaster(ctx context.Context, source <-chan serial.Event) *workerEventBroadcaster {
+	b := &workerEventBroadcaster{
+		ctx:         ctx,
+		source:      source,
+		subscribers: make(map[*workerEventSubscription]struct{}),
+	}
+	go b.run()
+	return b
+}
+
+func (b *workerEventBroadcaster) Subscribe() (<-chan serial.Event, func()) {
+	subscription := newWorkerEventSubscription()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		close(subscription.events)
+		return subscription.events, func() {}
+	}
+	b.subscribers[subscription] = struct{}{}
+	return subscription.events, func() { b.unsubscribe(subscription) }
+}
+
+func (b *workerEventBroadcaster) run() {
+	defer b.closeSubscribers()
+	for {
+		select {
+		case <-b.ctx.Done():
+			return
+		case event, ok := <-b.source:
+			if !ok {
+				return
+			}
+			if !b.broadcast(event) {
+				return
+			}
+		}
+	}
+}
+
+func (b *workerEventBroadcaster) broadcast(event serial.Event) bool {
+	b.mu.Lock()
+	subscribers := make([]*workerEventSubscription, 0, len(b.subscribers))
+	for subscriber := range b.subscribers {
+		subscribers = append(subscribers, subscriber)
+	}
+	b.mu.Unlock()
+
+	for _, subscriber := range subscribers {
+		if !subscriber.send(b.ctx, event) {
+			return false
+		}
+	}
+	return true
+}
+
+func (b *workerEventBroadcaster) unsubscribe(subscription *workerEventSubscription) {
+	subscription.cancel()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return
+	}
+	delete(b.subscribers, subscription)
+}
+
+func (b *workerEventBroadcaster) closeSubscribers() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return
+	}
+	b.closed = true
+	for subscription := range b.subscribers {
+		subscription.cancel()
+		close(subscription.events)
+	}
+	b.subscribers = nil
 }
 
 func NewReconciler(config ReconcilerConfig) *Reconciler {
@@ -165,17 +359,21 @@ func (r *Reconciler) Reconcile(ctx context.Context, channels []ChannelConfig, de
 		workerCtx, cancel := context.WithCancel(ctx)
 		workerBackend := &workerBackend{Backend: backend}
 		serialWorker := serial.NewWorker(channel.ID, channel.DefaultConfig, workerBackend)
-		events := proxyWorkerEvents(workerCtx, serialWorker.Events())
+		broadcaster := newWorkerEventBroadcaster(workerCtx, serialWorker.Events())
+		control := &managedWorkerControl{
+			worker:      serialWorker,
+			broadcaster: broadcaster,
+		}
+		events, _ := broadcaster.Subscribe()
 		done := make(chan struct{})
 		r.workers[channel.ID] = &managedWorker{
-			worker:  serialWorker,
+			control: control,
 			backend: workerBackend,
 			cancel:  cancel,
 			done:    done,
 			devName: device.DevName,
 			idPath:  device.IDPath,
 			config:  channel.DefaultConfig,
-			events:  events,
 		}
 		go func() {
 			defer close(done)
@@ -269,28 +467,5 @@ func (r *Reconciler) RFC2217Control(ctx context.Context, channelID string) (seri
 	if worker == nil || !worker.running() {
 		return nil, serial.Config{}, errChannelControlUnavailable
 	}
-	return worker.worker, worker.config, nil
-}
-
-func proxyWorkerEvents(ctx context.Context, source <-chan serial.Event) <-chan serial.Event {
-	events := make(chan serial.Event, 64)
-	go func() {
-		defer close(events)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case event, ok := <-source:
-				if !ok {
-					return
-				}
-				select {
-				case <-ctx.Done():
-					return
-				case events <- event:
-				}
-			}
-		}
-	}()
-	return events
+	return worker.control, worker.config, nil
 }

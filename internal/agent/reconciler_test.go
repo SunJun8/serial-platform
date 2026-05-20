@@ -159,6 +159,108 @@ func TestReconcilerRefreshesRFC2217ControlConfigWhenDefaultConfigChanges(t *test
 	}
 }
 
+func TestReconcilerRFC2217ControlReceivesSameRXEventsAsLogForwarding(t *testing.T) {
+	backendFactory := newFakeBackendFactory()
+	reconciler := agent.NewReconciler(agent.ReconcilerConfig{BackendFactory: backendFactory})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	channels := []agent.ChannelConfig{{
+		ID:            "channel-1",
+		IDPath:        "id-path-1",
+		Status:        "offline",
+		DefaultConfig: serial.DefaultConfig(),
+	}}
+	devices := []agent.DiscoveredDevice{{
+		DevName:      "/dev/ttyUSB0",
+		IDPath:       "id-path-1",
+		PermissionOK: true,
+	}}
+
+	result := reconciler.Reconcile(ctx, channels, devices)
+	if len(result.Statuses) != 1 || result.Statuses[0].Status != "online" {
+		t.Fatalf("statuses = %+v, want one online status", result.Statuses)
+	}
+	if len(result.Events) != 1 {
+		t.Fatalf("len(Events) = %d, want 1", len(result.Events))
+	}
+	logEvents := result.Events[0]
+
+	control, _, err := reconciler.RFC2217Control(ctx, "channel-1")
+	if err != nil {
+		t.Fatalf("RFC2217Control returned error: %v", err)
+	}
+	session, err := control.OpenControlSession(ctx, "rfc2217")
+	if err != nil {
+		t.Fatalf("OpenControlSession returned error: %v", err)
+	}
+	defer session.Close()
+	tunnelEvents := control.Events()
+
+	backend := backendFactory.backend("/dev/ttyUSB0")
+	if backend == nil {
+		t.Fatal("backend for /dev/ttyUSB0 was not opened")
+	}
+	backend.injectRX(t, []byte("rx-data"))
+
+	logEvent := readReconcilerEvent(t, logEvents)
+	assertSerialEvent(t, logEvent, "rx-data")
+	tunnelEvent := readReconcilerEvent(t, tunnelEvents)
+	assertSerialEvent(t, tunnelEvent, "rx-data")
+}
+
+func TestReconcilerRFC2217ControlCloseUnsubscribesEventStream(t *testing.T) {
+	backendFactory := newFakeBackendFactory()
+	reconciler := agent.NewReconciler(agent.ReconcilerConfig{BackendFactory: backendFactory})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	channels := []agent.ChannelConfig{{
+		ID:            "channel-1",
+		IDPath:        "id-path-1",
+		Status:        "offline",
+		DefaultConfig: serial.DefaultConfig(),
+	}}
+	devices := []agent.DiscoveredDevice{{
+		DevName:      "/dev/ttyUSB0",
+		IDPath:       "id-path-1",
+		PermissionOK: true,
+	}}
+
+	result := reconciler.Reconcile(ctx, channels, devices)
+	if len(result.Statuses) != 1 || result.Statuses[0].Status != "online" {
+		t.Fatalf("statuses = %+v, want one online status", result.Statuses)
+	}
+	if len(result.Events) != 1 {
+		t.Fatalf("len(Events) = %d, want 1", len(result.Events))
+	}
+	logEvents := result.Events[0]
+
+	control, _, err := reconciler.RFC2217Control(ctx, "channel-1")
+	if err != nil {
+		t.Fatalf("RFC2217Control returned error: %v", err)
+	}
+	session, err := control.OpenControlSession(ctx, "rfc2217")
+	if err != nil {
+		t.Fatalf("OpenControlSession returned error: %v", err)
+	}
+	_ = control.Events()
+	if err := session.Close(); err != nil {
+		t.Fatalf("session.Close returned error: %v", err)
+	}
+
+	backend := backendFactory.backend("/dev/ttyUSB0")
+	if backend == nil {
+		t.Fatal("backend for /dev/ttyUSB0 was not opened")
+	}
+	for i := 0; i < 70; i++ {
+		payload := []byte{byte(i)}
+		backend.injectRX(t, payload)
+		event := readReconcilerEvent(t, logEvents)
+		if string(event.Data) != string(payload) {
+			t.Fatalf("event %d Data = %x, want %x", i, event.Data, payload)
+		}
+	}
+}
+
 func TestReconcilerRestartsExitedWorkerForMatchingChannel(t *testing.T) {
 	backendFactory := newFakeBackendFactory()
 	reconciler := agent.NewReconciler(agent.ReconcilerConfig{BackendFactory: backendFactory})
@@ -615,6 +717,15 @@ func (b *reconcilerFakeBackend) waitClosed(timeout time.Duration) bool {
 	}
 }
 
+func (b *reconcilerFakeBackend) injectRX(t *testing.T, data []byte) {
+	t.Helper()
+	select {
+	case b.rx <- append([]byte(nil), data...):
+	case <-time.After(time.Second):
+		t.Fatalf("timeout injecting RX %q", data)
+	}
+}
+
 func (b *reconcilerFakeBackend) waitForWrite(t *testing.T, want []byte) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
@@ -632,4 +743,31 @@ func (b *reconcilerFakeBackend) waitForWrite(t *testing.T, want []byte) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	t.Fatalf("writes = %q, want %q", b.writes, want)
+}
+
+func readReconcilerEvent(t *testing.T, events <-chan serial.Event) serial.Event {
+	t.Helper()
+	select {
+	case event, ok := <-events:
+		if !ok {
+			t.Fatal("event stream closed before RX event")
+		}
+		return event
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for RX event")
+		return serial.Event{}
+	}
+}
+
+func assertSerialEvent(t *testing.T, event serial.Event, wantPayload string) {
+	t.Helper()
+	if event.ChannelID != "channel-1" {
+		t.Fatalf("event ChannelID = %q, want channel-1", event.ChannelID)
+	}
+	if event.Direction != serial.DirectionRX {
+		t.Fatalf("event Direction = %v, want RX", event.Direction)
+	}
+	if string(event.Data) != wantPayload {
+		t.Fatalf("event Data = %q, want %q", event.Data, wantPayload)
+	}
 }
