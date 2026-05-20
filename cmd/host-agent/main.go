@@ -15,6 +15,8 @@ import (
 
 	"serial-platform/internal/agent"
 	"serial-platform/internal/buildinfo"
+	"serial-platform/internal/protocol"
+	"serial-platform/internal/serial"
 )
 
 func main() {
@@ -51,6 +53,26 @@ func main() {
 		log.Fatalf("connect to central server: %v", err)
 	}
 	log.Printf("agent accepted status: %s", status)
+
+	frames := make(chan protocol.LogFrame, 256)
+	uploader := agent.NewLogUploader(agent.LogUploaderConfig{Out: frames})
+	go func() {
+		if err := client.SendLogFrames(ctx, frames); err != nil && ctx.Err() == nil {
+			log.Printf("send log frames: %v", err)
+		}
+	}()
+
+	runtime := agent.NewRuntime(agent.RuntimeConfig{
+		ScanInterval: 3 * time.Second,
+		ForwardEvents: func(ctx context.Context, events <-chan serial.Event) error {
+			return uploader.Forward(ctx, events)
+		},
+	})
+	go func() {
+		if err := runtime.Run(ctx); err != nil && ctx.Err() == nil {
+			log.Printf("agent runtime: %v", err)
+		}
+	}()
 
 	<-ctx.Done()
 	closeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

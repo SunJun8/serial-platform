@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 
 	"serial-platform/internal/agent"
 	"serial-platform/internal/protocol"
+	"serial-platform/internal/serial"
 )
 
 func TestClientConnectKeepsConnectionOpenUntilClose(t *testing.T) {
@@ -184,4 +186,93 @@ func TestClientSendLogFramesReturnsCloseErrorWhenNoFramesSent(t *testing.T) {
 	if err := client.SendLogFrames(ctx, frames); err == nil {
 		t.Fatal("SendLogFrames returned nil error, want close error")
 	}
+}
+
+func TestRuntimeScansAndForwardsReconciledEvents(t *testing.T) {
+	events := make(chan serial.Event)
+	forwarded := make(chan serial.Event, 1)
+	scanned := make(chan struct{}, 1)
+	reconciled := make(chan struct{}, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	runtime := agent.NewRuntime(agent.RuntimeConfig{
+		ScanInterval: time.Hour,
+		Discover: func(agent.DiscoveryConfig) ([]agent.DiscoveredDevice, error) {
+			select {
+			case scanned <- struct{}{}:
+			default:
+			}
+			return []agent.DiscoveredDevice{{DevName: "/dev/ttyUSB0", IDPath: "id-path-1", PermissionOK: true}}, nil
+		},
+		Reconciler: &runtimeFakeReconciler{
+			result: agent.ReconcileResult{Events: []<-chan serial.Event{events}},
+			done:   reconciled,
+		},
+		ForwardEvents: func(ctx context.Context, in <-chan serial.Event) error {
+			select {
+			case event := <-in:
+				forwarded <- event
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			return nil
+		},
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runtime.Run(ctx)
+	}()
+
+	select {
+	case <-scanned:
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not scan devices")
+	}
+	select {
+	case <-reconciled:
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not reconcile scan result")
+	}
+
+	events <- serial.Event{ChannelID: "channel-1", Direction: serial.DirectionRX, Timestamp: time.Unix(1, 0), Data: []byte("boot\n")}
+	select {
+	case event := <-forwarded:
+		if event.ChannelID != "channel-1" {
+			t.Fatalf("forwarded ChannelID = %q, want channel-1", event.ChannelID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not forward reconciled event stream")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != context.Canceled {
+			t.Fatalf("Run error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not stop after context cancellation")
+	}
+}
+
+type runtimeFakeReconciler struct {
+	mu       sync.Mutex
+	channels []agent.ChannelConfig
+	devices  []agent.DiscoveredDevice
+	result   agent.ReconcileResult
+	done     chan<- struct{}
+}
+
+func (r *runtimeFakeReconciler) Reconcile(_ context.Context, channels []agent.ChannelConfig, devices []agent.DiscoveredDevice) agent.ReconcileResult {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.channels = append([]agent.ChannelConfig(nil), channels...)
+	r.devices = append([]agent.DiscoveredDevice(nil), devices...)
+	select {
+	case r.done <- struct{}{}:
+	default:
+	}
+	return r.result
 }
