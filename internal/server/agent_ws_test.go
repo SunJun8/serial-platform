@@ -196,6 +196,51 @@ func TestAgentHelloRejectsMalformedHello(t *testing.T) {
 	}
 }
 
+func TestAgentHelloRejectsBinaryHello(t *testing.T) {
+	db := newAgentWSTestDB(t)
+	srv := server.New(server.ServerConfig{DB: db})
+	httpSrv := httptest.NewServer(srv)
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	conn := dialAgentWS(t, ctx, httpSrv.URL)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	payload, err := json.Marshal(protocol.AgentHello{
+		Type:      protocol.MessageAgentHello,
+		AgentID:   "agent-1",
+		Hostname:  "node-1",
+		Version:   "dev",
+		OS:        "linux",
+		Arch:      "arm64",
+		MachineID: "machine-1",
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal returned error: %v", err)
+	}
+	if err := conn.Write(ctx, websocket.MessageBinary, payload); err != nil {
+		t.Fatalf("conn.Write returned error: %v", err)
+	}
+
+	_, _, err = conn.Read(ctx)
+	if err == nil {
+		t.Fatal("conn.Read returned nil error, want rejected websocket close")
+	}
+	if got := websocket.CloseStatus(err); got != websocket.StatusPolicyViolation {
+		t.Fatalf("conn.Read close status = %v, want %v", got, websocket.StatusPolicyViolation)
+	}
+
+	agents, err := db.ListAgents()
+	if err != nil {
+		t.Fatalf("ListAgents returned error: %v", err)
+	}
+	if len(agents) != 0 {
+		t.Fatalf("len(agents) = %d, want 0", len(agents))
+	}
+}
+
 func TestAgentWebSocketStoresCandidatesFromDeviceSnapshot(t *testing.T) {
 	db := newAgentWSTestDB(t)
 	srv := server.New(server.ServerConfig{DB: db})

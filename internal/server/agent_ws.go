@@ -22,8 +22,16 @@ func (srv *Server) handleAgentWebSocket(w http.ResponseWriter, r *http.Request) 
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	ctx := r.Context()
+	messageType, data, err := conn.Read(ctx)
+	if err != nil {
+		return
+	}
+	if messageType != websocket.MessageText {
+		conn.Close(websocket.StatusPolicyViolation, "agent hello must be text")
+		return
+	}
 	var hello protocol.AgentHello
-	if err := protocol.ReadJSON(ctx, conn, &hello); err != nil {
+	if err := json.Unmarshal(data, &hello); err != nil {
 		return
 	}
 	if hello.Type != protocol.MessageAgentHello || hello.AgentID == "" {
