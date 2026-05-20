@@ -146,6 +146,73 @@ func TestReconcilerReportsCandidateWhenOnlyIDPathTagIsConfigured(t *testing.T) {
 	}
 }
 
+func TestReconcilerDoesNotStartWorkerWhenOnlyIDPathTagMatches(t *testing.T) {
+	backendFactory := newFakeBackendFactory()
+	reconciler := agent.NewReconciler(agent.ReconcilerConfig{BackendFactory: backendFactory})
+	channels := []agent.ChannelConfig{{
+		ID:            "channel-1",
+		IDPath:        "configured-id-path",
+		IDPathTag:     "shared-id-path-tag",
+		Status:        "offline",
+		DefaultConfig: serial.DefaultConfig(),
+	}}
+	devices := []agent.DiscoveredDevice{{
+		DevName:      "/dev/ttyUSB0",
+		IDPath:       "candidate-id-path",
+		IDPathTag:    "shared-id-path-tag",
+		PermissionOK: true,
+	}}
+
+	result := reconciler.Reconcile(context.Background(), channels, devices)
+	if len(result.Statuses) != 1 {
+		t.Fatalf("len(Statuses) = %d, want 1", len(result.Statuses))
+	}
+	if result.Statuses[0].Status != "offline" {
+		t.Fatalf("Status = %q, want offline", result.Statuses[0].Status)
+	}
+	if backendFactory.openedCount("/dev/ttyUSB0") != 0 {
+		t.Fatalf("opened /dev/ttyUSB0 = %d, want 0", backendFactory.openedCount("/dev/ttyUSB0"))
+	}
+	if len(result.Candidates) != 1 {
+		t.Fatalf("len(Candidates) = %d, want 1", len(result.Candidates))
+	}
+	if result.Candidates[0].IDPath != "candidate-id-path" {
+		t.Fatalf("candidate IDPath = %q, want candidate-id-path", result.Candidates[0].IDPath)
+	}
+}
+
+func TestReconcilerFallsBackToDevNameWhenIDPathMissing(t *testing.T) {
+	backendFactory := newFakeBackendFactory()
+	reconciler := agent.NewReconciler(agent.ReconcilerConfig{BackendFactory: backendFactory})
+	channels := []agent.ChannelConfig{{
+		ID:            "channel-1",
+		DevName:       "/dev/ttyUSB0",
+		IDPathTag:     "configured-id-path-tag",
+		Status:        "offline",
+		DefaultConfig: serial.DefaultConfig(),
+	}}
+	devices := []agent.DiscoveredDevice{{
+		DevName:      "/dev/ttyUSB0",
+		IDPath:       "candidate-id-path",
+		IDPathTag:    "candidate-id-path-tag",
+		PermissionOK: true,
+	}}
+
+	result := reconciler.Reconcile(context.Background(), channels, devices)
+	if len(result.Statuses) != 1 {
+		t.Fatalf("len(Statuses) = %d, want 1", len(result.Statuses))
+	}
+	if result.Statuses[0].Status != "online" {
+		t.Fatalf("Status = %q, want online", result.Statuses[0].Status)
+	}
+	if result.Statuses[0].DevName != "/dev/ttyUSB0" {
+		t.Fatalf("DevName = %q, want /dev/ttyUSB0", result.Statuses[0].DevName)
+	}
+	if backendFactory.openedCount("/dev/ttyUSB0") != 1 {
+		t.Fatalf("opened /dev/ttyUSB0 = %d, want 1", backendFactory.openedCount("/dev/ttyUSB0"))
+	}
+}
+
 func TestReconcilerDoesNotMatchStaleDevNameWhenIDPathConfigured(t *testing.T) {
 	backendFactory := newFakeBackendFactory()
 	reconciler := agent.NewReconciler(agent.ReconcilerConfig{BackendFactory: backendFactory})

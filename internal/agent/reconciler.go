@@ -212,10 +212,7 @@ func matchChannelDevice(channel ChannelConfig, devices []DiscoveredDevice) (Disc
 		if channel.IDPath != "" && device.IDPath == channel.IDPath {
 			return device, true
 		}
-		if channel.IDPathTag != "" && device.IDPathTag == channel.IDPathTag {
-			return device, true
-		}
-		if channel.IDPath == "" && channel.IDPathTag == "" && channel.DevName != "" && device.DevName == channel.DevName {
+		if channel.IDPath == "" && channel.DevName != "" && device.DevName == channel.DevName {
 			return device, true
 		}
 	}
