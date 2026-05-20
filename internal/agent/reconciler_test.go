@@ -58,6 +58,49 @@ func TestReconcilerStartsWorkerForMatchingChannel(t *testing.T) {
 	}
 }
 
+func TestReconcilerRestartsExitedWorkerForMatchingChannel(t *testing.T) {
+	backendFactory := newFakeBackendFactory()
+	reconciler := agent.NewReconciler(agent.ReconcilerConfig{BackendFactory: backendFactory})
+	channels := []agent.ChannelConfig{{
+		ID:            "channel-1",
+		IDPath:        "id-path-1",
+		Status:        "offline",
+		DefaultConfig: serial.DefaultConfig(),
+	}}
+	devices := []agent.DiscoveredDevice{{
+		DevName:      "/dev/ttyUSB0",
+		IDPath:       "id-path-1",
+		PermissionOK: true,
+	}}
+
+	result := reconciler.Reconcile(context.Background(), channels, devices)
+	if len(result.Events) != 1 {
+		t.Fatalf("len(Events) = %d, want 1", len(result.Events))
+	}
+	firstBackend := backendFactory.backend("/dev/ttyUSB0")
+	if firstBackend == nil {
+		t.Fatal("backend for /dev/ttyUSB0 was not opened")
+	}
+	firstBackend.finishReads()
+	if !firstBackend.waitReadDone(time.Second) {
+		t.Fatal("worker did not exit after backend read EOF")
+	}
+
+	result = reconciler.Reconcile(context.Background(), channels, devices)
+	if len(result.Statuses) != 1 || result.Statuses[0].Status != "online" {
+		t.Fatalf("second reconcile statuses = %+v, want one online status", result.Statuses)
+	}
+	if backendFactory.openedCount("/dev/ttyUSB0") != 2 {
+		t.Fatalf("opened /dev/ttyUSB0 after worker exit = %d, want 2", backendFactory.openedCount("/dev/ttyUSB0"))
+	}
+	if len(result.Events) != 1 {
+		t.Fatalf("len(Events) after worker restart = %d, want 1", len(result.Events))
+	}
+	if backendFactory.backend("/dev/ttyUSB0") == firstBackend {
+		t.Fatal("reconciler reused exited backend, want a newly opened backend")
+	}
+}
+
 func TestReconcilerReportsCandidateForUnconfiguredDevice(t *testing.T) {
 	reconciler := agent.NewReconciler(agent.ReconcilerConfig{BackendFactory: newFakeBackendFactory()})
 	devices := []agent.DiscoveredDevice{{
@@ -75,6 +118,31 @@ func TestReconcilerReportsCandidateForUnconfiguredDevice(t *testing.T) {
 	}
 	if result.Candidates[0].DevName != "/dev/ttyUSB0" {
 		t.Fatalf("candidate DevName = %q, want /dev/ttyUSB0", result.Candidates[0].DevName)
+	}
+}
+
+func TestReconcilerReportsCandidateWhenOnlyIDPathTagIsConfigured(t *testing.T) {
+	reconciler := agent.NewReconciler(agent.ReconcilerConfig{BackendFactory: newFakeBackendFactory()})
+	channels := []agent.ChannelConfig{{
+		ID:            "channel-1",
+		IDPath:        "configured-id-path",
+		IDPathTag:     "shared-id-path-tag",
+		Status:        "disabled",
+		DefaultConfig: serial.DefaultConfig(),
+	}}
+	devices := []agent.DiscoveredDevice{{
+		DevName:      "/dev/ttyUSB0",
+		IDPath:       "candidate-id-path",
+		IDPathTag:    "shared-id-path-tag",
+		PermissionOK: true,
+	}}
+
+	result := reconciler.Reconcile(context.Background(), channels, devices)
+	if len(result.Candidates) != 1 {
+		t.Fatalf("len(Candidates) = %d, want 1", len(result.Candidates))
+	}
+	if result.Candidates[0].IDPath != "candidate-id-path" {
+		t.Fatalf("candidate IDPath = %q, want candidate-id-path", result.Candidates[0].IDPath)
 	}
 }
 
@@ -152,6 +220,44 @@ func TestReconcilerClosesWorkerWhenChannelDisabled(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timeout waiting for worker event stream to close")
+	}
+}
+
+func TestReconcilerClosesExitedWorkerWhenChannelDisabled(t *testing.T) {
+	backendFactory := newFakeBackendFactory()
+	reconciler := agent.NewReconciler(agent.ReconcilerConfig{BackendFactory: backendFactory})
+	channels := []agent.ChannelConfig{{
+		ID:            "channel-1",
+		IDPath:        "id-path-1",
+		Status:        "offline",
+		DefaultConfig: serial.DefaultConfig(),
+	}}
+	devices := []agent.DiscoveredDevice{{
+		DevName:      "/dev/ttyUSB0",
+		IDPath:       "id-path-1",
+		PermissionOK: true,
+	}}
+
+	result := reconciler.Reconcile(context.Background(), channels, devices)
+	if len(result.Statuses) != 1 || result.Statuses[0].Status != "online" {
+		t.Fatalf("first reconcile statuses = %+v, want one online status", result.Statuses)
+	}
+	backend := backendFactory.backend("/dev/ttyUSB0")
+	if backend == nil {
+		t.Fatal("backend for /dev/ttyUSB0 was not opened")
+	}
+	backend.finishReads()
+	if !backend.waitReadDone(time.Second) {
+		t.Fatal("worker did not exit after backend read EOF")
+	}
+
+	channels[0].Status = "disabled"
+	result = reconciler.Reconcile(context.Background(), channels, devices)
+	if len(result.Statuses) != 1 || result.Statuses[0].Status != "disabled" {
+		t.Fatalf("disabled reconcile statuses = %+v, want one disabled status", result.Statuses)
+	}
+	if !backend.waitClosed(time.Second) {
+		t.Fatal("exited worker backend was not closed after channel disabled")
 	}
 }
 
@@ -253,15 +359,21 @@ func (f *fakeBackendFactory) backend(devName string) *reconcilerFakeBackend {
 }
 
 type reconcilerFakeBackend struct {
-	rx     chan []byte
-	closed chan struct{}
-	once   sync.Once
+	rx        chan []byte
+	closed    chan struct{}
+	readDone  chan struct{}
+	mu        sync.Mutex
+	readEOF   bool
+	closeEOF  bool
+	closeOnce sync.Once
+	readOnce  sync.Once
 }
 
 func newReconcilerFakeBackend() *reconcilerFakeBackend {
 	return &reconcilerFakeBackend{
-		rx:     make(chan []byte),
-		closed: make(chan struct{}),
+		rx:       make(chan []byte),
+		closed:   make(chan struct{}),
+		readDone: make(chan struct{}),
 	}
 }
 
@@ -274,6 +386,7 @@ func (b *reconcilerFakeBackend) SetRTS(bool) error { return nil }
 func (b *reconcilerFakeBackend) SendBreak(time.Duration) error { return nil }
 
 func (b *reconcilerFakeBackend) Read(buf []byte) (int, error) {
+	defer b.readOnce.Do(func() { close(b.readDone) })
 	select {
 	case data, ok := <-b.rx:
 		if !ok {
@@ -290,11 +403,35 @@ func (b *reconcilerFakeBackend) Write(data []byte) (int, error) {
 }
 
 func (b *reconcilerFakeBackend) Close() error {
-	b.once.Do(func() {
+	b.closeOnce.Do(func() {
 		close(b.closed)
-		close(b.rx)
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		if !b.readEOF {
+			b.closeEOF = true
+			close(b.rx)
+		}
 	})
 	return nil
+}
+
+func (b *reconcilerFakeBackend) finishReads() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.readEOF || b.closeEOF {
+		return
+	}
+	b.readEOF = true
+	close(b.rx)
+}
+
+func (b *reconcilerFakeBackend) waitReadDone(timeout time.Duration) bool {
+	select {
+	case <-b.readDone:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 func (b *reconcilerFakeBackend) waitClosed(timeout time.Duration) bool {

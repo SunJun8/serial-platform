@@ -53,10 +53,25 @@ type Reconciler struct {
 
 type managedWorker struct {
 	worker  *serial.Worker
+	backend serial.Backend
 	cancel  context.CancelFunc
+	done    <-chan struct{}
 	devName string
 	idPath  string
 	events  <-chan serial.Event
+}
+
+type workerBackend struct {
+	serial.Backend
+	closeOnce sync.Once
+	closeErr  error
+}
+
+func (b *workerBackend) Close() error {
+	b.closeOnce.Do(func() {
+		b.closeErr = b.Backend.Close()
+	})
+	return b.closeErr
 }
 
 func NewReconciler(config ReconcilerConfig) *Reconciler {
@@ -76,7 +91,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, channels []ChannelConfig, de
 
 	desired := make(map[string]struct{}, len(channels))
 	configuredIDPaths := make(map[string]struct{}, len(channels))
-	configuredIDPathTags := make(map[string]struct{}, len(channels))
 	result := ReconcileResult{
 		Statuses: make([]ChannelStatus, 0, len(channels)),
 	}
@@ -88,9 +102,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, channels []ChannelConfig, de
 		desired[channel.ID] = struct{}{}
 		if channel.IDPath != "" {
 			configuredIDPaths[channel.IDPath] = struct{}{}
-		}
-		if channel.IDPathTag != "" {
-			configuredIDPathTags[channel.IDPathTag] = struct{}{}
 		}
 
 		device, matched := matchChannelDevice(channel, devices)
@@ -122,6 +133,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, channels []ChannelConfig, de
 		}
 
 		worker := r.workers[channel.ID]
+		if worker != nil && !worker.running() {
+			r.stopWorkerLocked(channel.ID)
+			worker = nil
+		}
 		if worker != nil && workerMatches(worker, channel, device) {
 			result.Statuses = append(result.Statuses, ChannelStatus{
 				ChannelID: channel.ID,
@@ -144,16 +159,23 @@ func (r *Reconciler) Reconcile(ctx context.Context, channels []ChannelConfig, de
 		}
 
 		workerCtx, cancel := context.WithCancel(ctx)
-		serialWorker := serial.NewWorker(channel.ID, channel.DefaultConfig, backend)
+		workerBackend := &workerBackend{Backend: backend}
+		serialWorker := serial.NewWorker(channel.ID, channel.DefaultConfig, workerBackend)
 		events := proxyWorkerEvents(workerCtx, serialWorker.Events())
+		done := make(chan struct{})
 		r.workers[channel.ID] = &managedWorker{
 			worker:  serialWorker,
+			backend: workerBackend,
 			cancel:  cancel,
+			done:    done,
 			devName: device.DevName,
 			idPath:  device.IDPath,
 			events:  events,
 		}
-		go serialWorker.Run(workerCtx)
+		go func() {
+			defer close(done)
+			serialWorker.Run(workerCtx)
+		}()
 
 		result.Statuses = append(result.Statuses, ChannelStatus{
 			ChannelID: channel.ID,
@@ -172,11 +194,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, channels []ChannelConfig, de
 	for _, device := range devices {
 		if device.IDPath != "" {
 			if _, ok := configuredIDPaths[device.IDPath]; ok {
-				continue
-			}
-		}
-		if device.IDPathTag != "" {
-			if _, ok := configuredIDPathTags[device.IDPathTag]; ok {
 				continue
 			}
 		}
@@ -215,12 +232,22 @@ func workerMatches(worker *managedWorker, channel ChannelConfig, device Discover
 	return true
 }
 
+func (worker *managedWorker) running() bool {
+	select {
+	case <-worker.done:
+		return false
+	default:
+		return true
+	}
+}
+
 func (r *Reconciler) stopWorkerLocked(channelID string) {
 	worker := r.workers[channelID]
 	if worker == nil {
 		return
 	}
 	worker.cancel()
+	_ = worker.backend.Close()
 	delete(r.workers, channelID)
 }
 
