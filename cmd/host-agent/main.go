@@ -70,6 +70,12 @@ func main() {
 		ForwardEvents: func(ctx context.Context, events <-chan serial.Event) error {
 			return uploader.Forward(ctx, events)
 		},
+		ForwardSnapshot: func(ctx context.Context, devices []agent.DiscoveredDevice) error {
+			return client.SendControl(ctx, agent.NewDeviceSnapshotMessage(id, devices))
+		},
+		ForwardStatuses: func(ctx context.Context, statuses []agent.ChannelStatus) error {
+			return client.SendControl(ctx, agent.NewChannelStatusUpdateMessage(id, statuses))
+		},
 	})
 	go func() {
 		if err := runtime.Run(ctx); err != nil && ctx.Err() == nil {

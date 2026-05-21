@@ -595,24 +595,32 @@ type DiscoverFunc func(DiscoveryConfig) ([]DiscoveredDevice, error)
 
 type ForwardEventsFunc func(context.Context, <-chan serial.Event) error
 
+type ForwardSnapshotFunc func(context.Context, []DiscoveredDevice) error
+
+type ForwardStatusesFunc func(context.Context, []ChannelStatus) error
+
 type RuntimeConfig struct {
-	ScanInterval  time.Duration
-	Discovery     DiscoveryConfig
-	Discover      DiscoverFunc
-	Reconciler    RuntimeReconciler
-	Channels      []ChannelConfig
-	ChannelSource ChannelSourceFunc
-	ForwardEvents ForwardEventsFunc
+	ScanInterval    time.Duration
+	Discovery       DiscoveryConfig
+	Discover        DiscoverFunc
+	Reconciler      RuntimeReconciler
+	Channels        []ChannelConfig
+	ChannelSource   ChannelSourceFunc
+	ForwardEvents   ForwardEventsFunc
+	ForwardSnapshot ForwardSnapshotFunc
+	ForwardStatuses ForwardStatusesFunc
 }
 
 type Runtime struct {
-	scanInterval  time.Duration
-	discovery     DiscoveryConfig
-	discover      DiscoverFunc
-	reconciler    RuntimeReconciler
-	channels      []ChannelConfig
-	channelSource ChannelSourceFunc
-	forwardEvents ForwardEventsFunc
+	scanInterval    time.Duration
+	discovery       DiscoveryConfig
+	discover        DiscoverFunc
+	reconciler      RuntimeReconciler
+	channels        []ChannelConfig
+	channelSource   ChannelSourceFunc
+	forwardEvents   ForwardEventsFunc
+	forwardSnapshot ForwardSnapshotFunc
+	forwardStatuses ForwardStatusesFunc
 
 	mu         sync.Mutex
 	forwarding map[<-chan serial.Event]struct{}
@@ -632,14 +640,16 @@ func NewRuntime(config RuntimeConfig) *Runtime {
 		reconciler = NewReconciler(ReconcilerConfig{})
 	}
 	return &Runtime{
-		scanInterval:  scanInterval,
-		discovery:     config.Discovery,
-		discover:      discover,
-		reconciler:    reconciler,
-		channels:      append([]ChannelConfig(nil), config.Channels...),
-		channelSource: config.ChannelSource,
-		forwardEvents: config.ForwardEvents,
-		forwarding:    make(map[<-chan serial.Event]struct{}),
+		scanInterval:    scanInterval,
+		discovery:       config.Discovery,
+		discover:        discover,
+		reconciler:      reconciler,
+		channels:        append([]ChannelConfig(nil), config.Channels...),
+		channelSource:   config.ChannelSource,
+		forwardEvents:   config.ForwardEvents,
+		forwardSnapshot: config.ForwardSnapshot,
+		forwardStatuses: config.ForwardStatuses,
+		forwarding:      make(map[<-chan serial.Event]struct{}),
 	}
 }
 
@@ -681,7 +691,60 @@ func (runtime *Runtime) scan(ctx context.Context) error {
 	for _, stream := range result.Events {
 		runtime.startForwarding(ctx, stream)
 	}
+	if len(result.Candidates) > 0 && runtime.forwardSnapshot != nil {
+		if err := runtime.forwardSnapshot(ctx, result.Candidates); err != nil {
+			return err
+		}
+	}
+	if len(result.Statuses) > 0 && runtime.forwardStatuses != nil {
+		if err := runtime.forwardStatuses(ctx, result.Statuses); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func NewDeviceSnapshotMessage(agentID string, devices []DiscoveredDevice) protocol.DeviceSnapshot {
+	identities := make([]protocol.DeviceIdentity, 0, len(devices))
+	for _, device := range devices {
+		identities = append(identities, protocol.DeviceIdentity{
+			DevName:      device.DevName,
+			IDPath:       device.IDPath,
+			IDPathTag:    device.IDPathTag,
+			SysfsDevpath: device.SysfsDevpath,
+			Interface:    device.Interface,
+			VID:          device.VID,
+			PID:          device.PID,
+			Serial:       device.Serial,
+			Driver:       device.Driver,
+			Manufacturer: device.Manufacturer,
+			Product:      device.Product,
+			PermissionOK: device.PermissionOK,
+			ErrorMessage: device.ErrorMessage,
+		})
+	}
+	return protocol.DeviceSnapshot{
+		Type:    protocol.MessageDeviceSnapshot,
+		AgentID: agentID,
+		Devices: identities,
+	}
+}
+
+func NewChannelStatusUpdateMessage(agentID string, statuses []ChannelStatus) protocol.ChannelStatusUpdate {
+	runtimeStatuses := make([]protocol.ChannelRuntimeStatus, 0, len(statuses))
+	for _, status := range statuses {
+		runtimeStatuses = append(runtimeStatuses, protocol.ChannelRuntimeStatus{
+			ChannelID:    status.ChannelID,
+			Status:       status.Status,
+			DevName:      status.DevName,
+			ErrorMessage: status.ErrorMessage,
+		})
+	}
+	return protocol.ChannelStatusUpdate{
+		Type:     protocol.MessageChannelStatus,
+		AgentID:  agentID,
+		Statuses: runtimeStatuses,
+	}
 }
 
 func (runtime *Runtime) currentChannels(ctx context.Context) ([]ChannelConfig, error) {

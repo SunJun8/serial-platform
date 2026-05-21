@@ -902,6 +902,75 @@ func TestRuntimeScansAndForwardsReconciledEvents(t *testing.T) {
 	}
 }
 
+func TestRuntimeForwardsSnapshotAndStatusAfterReconcile(t *testing.T) {
+	snapshots := make(chan []agent.DiscoveredDevice, 1)
+	statuses := make(chan []agent.ChannelStatus, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	runtime := agent.NewRuntime(agent.RuntimeConfig{
+		ScanInterval: time.Hour,
+		Discover: func(agent.DiscoveryConfig) ([]agent.DiscoveredDevice, error) {
+			return []agent.DiscoveredDevice{{DevName: "/dev/ttyUSB0", IDPath: "id-path-1", IDPathTag: "id-path-tag-1", PermissionOK: true}}, nil
+		},
+		Reconciler: &runtimeFakeReconciler{
+			result: agent.ReconcileResult{
+				Candidates: []agent.DiscoveredDevice{{
+					DevName:      "/dev/ttyUSB1",
+					IDPath:       "candidate-id-path",
+					IDPathTag:    "candidate-id-path-tag",
+					PermissionOK: true,
+				}},
+				Statuses: []agent.ChannelStatus{{
+					ChannelID: "channel-1",
+					Status:    "online",
+					DevName:   "/dev/ttyUSB0",
+				}},
+			},
+		},
+		ForwardSnapshot: func(_ context.Context, devices []agent.DiscoveredDevice) error {
+			snapshots <- append([]agent.DiscoveredDevice(nil), devices...)
+			return nil
+		},
+		ForwardStatuses: func(_ context.Context, in []agent.ChannelStatus) error {
+			statuses <- append([]agent.ChannelStatus(nil), in...)
+			return nil
+		},
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runtime.Run(ctx)
+	}()
+
+	select {
+	case got := <-snapshots:
+		if len(got) != 1 || got[0].DevName != "/dev/ttyUSB1" || got[0].IDPath != "candidate-id-path" {
+			t.Fatalf("forwarded snapshot = %+v, want candidate /dev/ttyUSB1", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not forward reconciled candidates")
+	}
+	select {
+	case got := <-statuses:
+		if len(got) != 1 || got[0].ChannelID != "channel-1" || got[0].Status != "online" || got[0].DevName != "/dev/ttyUSB0" {
+			t.Fatalf("forwarded statuses = %+v, want channel-1 online on /dev/ttyUSB0", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not forward reconciled statuses")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != context.Canceled {
+			t.Fatalf("Run error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not stop after context cancellation")
+	}
+}
+
 func TestRuntimeReleasesReconcilerEventStreamWhenForwardingStops(t *testing.T) {
 	backendFactory := newFakeBackendFactory()
 	reconciler := agent.NewReconciler(agent.ReconcilerConfig{BackendFactory: backendFactory})
@@ -1004,6 +1073,62 @@ func TestRuntimeContinuesAfterTransientScanErrors(t *testing.T) {
 	}
 	if sourceCalls < 2 {
 		t.Fatalf("channel source calls = %d, want at least 2", sourceCalls)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != context.Canceled {
+			t.Fatalf("Run error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not stop after context cancellation")
+	}
+}
+
+func TestRuntimeContinuesAfterTransientRuntimeStateForwardError(t *testing.T) {
+	forwarded := make(chan []agent.DiscoveredDevice, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	forwardCalls := 0
+	runtime := agent.NewRuntime(agent.RuntimeConfig{
+		ScanInterval: time.Millisecond,
+		Discover: func(agent.DiscoveryConfig) ([]agent.DiscoveredDevice, error) {
+			return []agent.DiscoveredDevice{{DevName: "/dev/ttyUSB0", IDPath: "id-path-1", PermissionOK: true}}, nil
+		},
+		Reconciler: &runtimeFakeReconciler{
+			result: agent.ReconcileResult{
+				Candidates: []agent.DiscoveredDevice{{DevName: "/dev/ttyUSB0", IDPath: "id-path-1", PermissionOK: true}},
+			},
+		},
+		ForwardSnapshot: func(_ context.Context, devices []agent.DiscoveredDevice) error {
+			forwardCalls++
+			if forwardCalls == 1 {
+				return errors.New("temporary snapshot forward failure")
+			}
+			select {
+			case forwarded <- append([]agent.DiscoveredDevice(nil), devices...):
+			default:
+			}
+			return nil
+		},
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runtime.Run(ctx)
+	}()
+
+	select {
+	case got := <-forwarded:
+		if len(got) != 1 || got[0].IDPath != "id-path-1" {
+			t.Fatalf("forwarded snapshot after retry = %+v, want id-path-1", got)
+		}
+	case err := <-done:
+		t.Fatalf("Run returned before retrying after forward error: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not retry after snapshot forward error")
 	}
 
 	cancel()
