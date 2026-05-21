@@ -188,6 +188,15 @@ func (srv *Server) readAgentControlMessages(ctx context.Context, agentID string,
 			}
 			log.Printf("agent %s tunnel %s error: %s", agentID, tunnelError.TunnelID, tunnelError.Error)
 			srv.tunnels.CancelWithError(tunnelError.TunnelID, errors.New(tunnelError.Error))
+		case protocol.MessageOperationResult:
+			var result protocol.OperationResult
+			if err := json.Unmarshal(data, &result); err != nil {
+				log.Printf("decode operation result from %s: %v", agentID, err)
+				continue
+			}
+			if !result.OK {
+				log.Printf("agent %s operation %s failed: %s", agentID, result.RequestID, result.Error)
+			}
 		default:
 			log.Printf("agent %s sent unsupported control message type %q", agentID, envelope.Type)
 		}

@@ -497,6 +497,10 @@ type agentRFC2217FakeSession struct {
 	mu        sync.Mutex
 	ownerName string
 	writes    [][]byte
+	configs   []serial.Config
+	dtrs      []bool
+	rtss      []bool
+	breaks    []time.Duration
 	opened    chan struct{}
 	closed    chan struct{}
 	onceOpen  sync.Once
@@ -532,13 +536,33 @@ func (s *agentRFC2217FakeSession) Write(data []byte) error {
 	return nil
 }
 
-func (s *agentRFC2217FakeSession) SetConfig(serial.Config) error { return nil }
+func (s *agentRFC2217FakeSession) SetConfig(config serial.Config) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.configs = append(s.configs, config)
+	return nil
+}
 
-func (s *agentRFC2217FakeSession) SetDTR(bool) error { return nil }
+func (s *agentRFC2217FakeSession) SetDTR(value bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dtrs = append(s.dtrs, value)
+	return nil
+}
 
-func (s *agentRFC2217FakeSession) SetRTS(bool) error { return nil }
+func (s *agentRFC2217FakeSession) SetRTS(value bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rtss = append(s.rtss, value)
+	return nil
+}
 
-func (s *agentRFC2217FakeSession) SendBreak(time.Duration) error { return nil }
+func (s *agentRFC2217FakeSession) SendBreak(duration time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.breaks = append(s.breaks, duration)
+	return nil
+}
 
 func (s *agentRFC2217FakeSession) Close() error {
 	s.onceClose.Do(func() {
@@ -582,4 +606,80 @@ func (s *agentRFC2217FakeSession) waitForWrite(t *testing.T, want []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t.Fatalf("writes = %q, want %q", s.writes, want)
+}
+
+func (s *agentRFC2217FakeSession) waitForConfig(t *testing.T, want serial.Config) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		s.mu.Lock()
+		for _, got := range s.configs {
+			if got == want {
+				s.mu.Unlock()
+				return
+			}
+		}
+		s.mu.Unlock()
+		time.Sleep(time.Millisecond)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t.Fatalf("configs = %+v, want %+v", s.configs, want)
+}
+
+func (s *agentRFC2217FakeSession) waitForDTR(t *testing.T, want bool) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		s.mu.Lock()
+		for _, got := range s.dtrs {
+			if got == want {
+				s.mu.Unlock()
+				return
+			}
+		}
+		s.mu.Unlock()
+		time.Sleep(time.Millisecond)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t.Fatalf("dtrs = %+v, want %v", s.dtrs, want)
+}
+
+func (s *agentRFC2217FakeSession) waitForRTS(t *testing.T, want bool) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		s.mu.Lock()
+		for _, got := range s.rtss {
+			if got == want {
+				s.mu.Unlock()
+				return
+			}
+		}
+		s.mu.Unlock()
+		time.Sleep(time.Millisecond)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t.Fatalf("rtss = %+v, want %v", s.rtss, want)
+}
+
+func (s *agentRFC2217FakeSession) waitForBreak(t *testing.T, want time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		s.mu.Lock()
+		for _, got := range s.breaks {
+			if got == want {
+				s.mu.Unlock()
+				return
+			}
+		}
+		s.mu.Unlock()
+		time.Sleep(time.Millisecond)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t.Fatalf("breaks = %+v, want %v", s.breaks, want)
 }

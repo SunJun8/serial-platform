@@ -119,15 +119,31 @@ type ChannelStatusUpdate struct {
 	Statuses []ChannelRuntimeStatus `json:"statuses"`
 }
 
+type TerminalOpen struct {
+	Type      MessageType `json:"type"`
+	SessionID string      `json:"session_id"`
+	ChannelID string      `json:"channel_id"`
+}
+
+type TerminalClose struct {
+	Type      MessageType `json:"type"`
+	SessionID string      `json:"session_id"`
+	ChannelID string      `json:"channel_id"`
+}
+
 type TerminalWrite struct {
 	Type      MessageType `json:"type"`
 	RequestID string      `json:"request_id,omitempty"`
+	SessionID string      `json:"session_id,omitempty"`
+	ChannelID string      `json:"channel_id,omitempty"`
 	Data      []byte      `json:"data"`
 }
 
 type SerialSetConfig struct {
 	Type      MessageType `json:"type"`
 	RequestID string      `json:"request_id,omitempty"`
+	SessionID string      `json:"session_id,omitempty"`
+	ChannelID string      `json:"channel_id,omitempty"`
 	Baud      int         `json:"baud"`
 	DataBits  int         `json:"data_bits"`
 	Parity    string      `json:"parity"`
@@ -138,18 +154,24 @@ type SerialSetConfig struct {
 type SerialSetDTR struct {
 	Type      MessageType `json:"type"`
 	RequestID string      `json:"request_id,omitempty"`
+	SessionID string      `json:"session_id,omitempty"`
+	ChannelID string      `json:"channel_id,omitempty"`
 	Value     bool        `json:"value"`
 }
 
 type SerialSetRTS struct {
 	Type      MessageType `json:"type"`
 	RequestID string      `json:"request_id,omitempty"`
+	SessionID string      `json:"session_id,omitempty"`
+	ChannelID string      `json:"channel_id,omitempty"`
 	Value     bool        `json:"value"`
 }
 
 type SerialSendBreak struct {
 	Type       MessageType `json:"type"`
 	RequestID  string      `json:"request_id,omitempty"`
+	SessionID  string      `json:"session_id,omitempty"`
+	ChannelID  string      `json:"channel_id,omitempty"`
 	DurationMS int         `json:"duration_ms"`
 }
 

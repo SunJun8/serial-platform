@@ -60,9 +60,44 @@ func TestProtocolMessageStructsJSON(t *testing.T) {
 			msg: TerminalWrite{
 				Type:      MessageTerminalWrite,
 				RequestID: "request-1",
+				SessionID: "session-1",
+				ChannelID: "channel-1",
 				Data:      []byte("AT\r\n"),
 			},
-			want: `{"type":"terminal_write","request_id":"request-1","data":"QVQNCg=="}`,
+			want: `{"type":"terminal_write","request_id":"request-1","session_id":"session-1","channel_id":"channel-1","data":"QVQNCg=="}`,
+		},
+		{
+			name: "terminal open",
+			msg: TerminalOpen{
+				Type:      MessageTerminalOpen,
+				SessionID: "session-1",
+				ChannelID: "channel-1",
+			},
+			want: `{"type":"terminal_open","session_id":"session-1","channel_id":"channel-1"}`,
+		},
+		{
+			name: "terminal close",
+			msg: TerminalClose{
+				Type:      MessageTerminalClose,
+				SessionID: "session-1",
+				ChannelID: "channel-1",
+			},
+			want: `{"type":"terminal_close","session_id":"session-1","channel_id":"channel-1"}`,
+		},
+		{
+			name: "serial config with session",
+			msg: SerialSetConfig{
+				Type:      MessageSerialSetConfig,
+				RequestID: "request-2",
+				SessionID: "session-1",
+				ChannelID: "channel-1",
+				Baud:      921600,
+				DataBits:  8,
+				Parity:    "N",
+				StopBits:  1,
+				Flow:      "none",
+			},
+			want: `{"type":"serial_set_config","request_id":"request-2","session_id":"session-1","channel_id":"channel-1","baud":921600,"data_bits":8,"parity":"N","stop_bits":1,"flow":"none"}`,
 		},
 		{
 			name: "operation result",

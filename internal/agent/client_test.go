@@ -290,6 +290,293 @@ func TestClientHandlesRFC2217OpenTunnelWithResolvedControl(t *testing.T) {
 	}
 }
 
+func TestClientHandlesTerminalOpenWriteAndClose(t *testing.T) {
+	control := newAgentRFC2217FakeControl()
+	results := make(chan protocol.OperationResult, 3)
+
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ws/agent" {
+			http.NotFound(w, r)
+			return
+		}
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "")
+
+		var hello protocol.AgentHello
+		if err := protocol.ReadJSON(r.Context(), conn, &hello); err != nil {
+			return
+		}
+		if err := protocol.WriteJSON(r.Context(), conn, protocol.AgentAccepted{
+			Type:   protocol.MessageAgentAccepted,
+			Status: "active",
+		}); err != nil {
+			return
+		}
+		if err := protocol.WriteJSON(r.Context(), conn, protocol.TerminalOpen{
+			Type:      protocol.MessageTerminalOpen,
+			SessionID: "session-1",
+			ChannelID: "channel-1",
+		}); err != nil {
+			return
+		}
+		results <- readAgentOperationResult(t, r.Context(), conn)
+		if err := protocol.WriteJSON(r.Context(), conn, protocol.TerminalWrite{
+			Type:      protocol.MessageTerminalWrite,
+			RequestID: "request-write",
+			SessionID: "session-1",
+			ChannelID: "channel-1",
+			Data:      []byte("AT\r"),
+		}); err != nil {
+			return
+		}
+		results <- readAgentOperationResult(t, r.Context(), conn)
+		if err := protocol.WriteJSON(r.Context(), conn, protocol.TerminalClose{
+			Type:      protocol.MessageTerminalClose,
+			SessionID: "session-1",
+			ChannelID: "channel-1",
+		}); err != nil {
+			return
+		}
+		results <- readAgentOperationResult(t, r.Context(), conn)
+		<-r.Context().Done()
+	}))
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	client := &agent.Client{Config: agent.Config{
+		ServerURL: httpSrv.URL,
+		AgentID:   "agent-1",
+	}}
+	if _, err := client.Connect(ctx); err != nil {
+		t.Fatalf("Connect returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close(context.Background()) })
+
+	done := make(chan error, 1)
+	go func() {
+		done <- client.HandleControlMessages(ctx, agentRFC2217Resolver{control: control}, agent.TunnelDialer{ServerURL: httpSrv.URL})
+	}()
+
+	openResult := receiveAgentOperationResult(t, ctx, results)
+	if !openResult.OK || openResult.RequestID != "" {
+		t.Fatalf("open result = %+v, want OK with empty request id", openResult)
+	}
+	control.session.waitForOpen(t)
+	if owner := control.session.owner(); owner != "web" {
+		t.Fatalf("control session owner = %q, want web", owner)
+	}
+
+	control.session.waitForWrite(t, []byte("AT\r"))
+	writeResult := receiveAgentOperationResult(t, ctx, results)
+	if !writeResult.OK || writeResult.RequestID != "request-write" {
+		t.Fatalf("write result = %+v, want OK for request-write", writeResult)
+	}
+
+	closeResult := receiveAgentOperationResult(t, ctx, results)
+	if !closeResult.OK || closeResult.RequestID != "" {
+		t.Fatalf("close result = %+v, want OK with empty request id", closeResult)
+	}
+	control.session.waitForClose(t)
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != context.Canceled {
+			t.Fatalf("HandleControlMessages returned %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("HandleControlMessages did not return after context cancellation")
+	}
+}
+
+func TestClientHandlesTerminalSerialControls(t *testing.T) {
+	control := newAgentRFC2217FakeControl()
+	results := make(chan protocol.OperationResult, 5)
+
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ws/agent" {
+			http.NotFound(w, r)
+			return
+		}
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "")
+
+		var hello protocol.AgentHello
+		if err := protocol.ReadJSON(r.Context(), conn, &hello); err != nil {
+			return
+		}
+		if err := protocol.WriteJSON(r.Context(), conn, protocol.AgentAccepted{
+			Type:   protocol.MessageAgentAccepted,
+			Status: "active",
+		}); err != nil {
+			return
+		}
+		messages := []any{
+			protocol.TerminalOpen{
+				Type:      protocol.MessageTerminalOpen,
+				SessionID: "session-1",
+				ChannelID: "channel-1",
+			},
+			protocol.SerialSetConfig{
+				Type:      protocol.MessageSerialSetConfig,
+				RequestID: "request-config",
+				SessionID: "session-1",
+				ChannelID: "channel-1",
+				Baud:      921600,
+				DataBits:  7,
+				Parity:    "E",
+				StopBits:  2,
+				Flow:      "rtscts",
+			},
+			protocol.SerialSetDTR{
+				Type:      protocol.MessageSerialSetDTR,
+				RequestID: "request-dtr",
+				SessionID: "session-1",
+				ChannelID: "channel-1",
+				Value:     true,
+			},
+			protocol.SerialSetRTS{
+				Type:      protocol.MessageSerialSetRTS,
+				RequestID: "request-rts",
+				SessionID: "session-1",
+				ChannelID: "channel-1",
+				Value:     false,
+			},
+			protocol.SerialSendBreak{
+				Type:       protocol.MessageSerialSendBreak,
+				RequestID:  "request-break",
+				SessionID:  "session-1",
+				ChannelID:  "channel-1",
+				DurationMS: 25,
+			},
+		}
+		for _, message := range messages {
+			if err := protocol.WriteJSON(r.Context(), conn, message); err != nil {
+				return
+			}
+			results <- readAgentOperationResult(t, r.Context(), conn)
+		}
+		<-r.Context().Done()
+	}))
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	client := &agent.Client{Config: agent.Config{
+		ServerURL: httpSrv.URL,
+		AgentID:   "agent-1",
+	}}
+	if _, err := client.Connect(ctx); err != nil {
+		t.Fatalf("Connect returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close(context.Background()) })
+
+	done := make(chan error, 1)
+	go func() {
+		done <- client.HandleControlMessages(ctx, agentRFC2217Resolver{control: control}, agent.TunnelDialer{ServerURL: httpSrv.URL})
+	}()
+
+	for _, requestID := range []string{"", "request-config", "request-dtr", "request-rts", "request-break"} {
+		result := receiveAgentOperationResult(t, ctx, results)
+		if !result.OK || result.RequestID != requestID {
+			t.Fatalf("operation result = %+v, want OK for %q", result, requestID)
+		}
+	}
+	control.session.waitForConfig(t, serial.Config{Baud: 921600, DataBits: 7, Parity: "E", StopBits: 2, Flow: "rtscts"})
+	control.session.waitForDTR(t, true)
+	control.session.waitForRTS(t, false)
+	control.session.waitForBreak(t, 25*time.Millisecond)
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != context.Canceled {
+			t.Fatalf("HandleControlMessages returned %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("HandleControlMessages did not return after context cancellation")
+	}
+}
+
+func TestClientClosesTerminalSessionOnControlConnectionLoss(t *testing.T) {
+	control := newAgentRFC2217FakeControl()
+	opened := make(chan struct{})
+
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ws/agent" {
+			http.NotFound(w, r)
+			return
+		}
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+
+		var hello protocol.AgentHello
+		if err := protocol.ReadJSON(r.Context(), conn, &hello); err != nil {
+			return
+		}
+		if err := protocol.WriteJSON(r.Context(), conn, protocol.AgentAccepted{
+			Type:   protocol.MessageAgentAccepted,
+			Status: "active",
+		}); err != nil {
+			return
+		}
+		if err := protocol.WriteJSON(r.Context(), conn, protocol.TerminalOpen{
+			Type:      protocol.MessageTerminalOpen,
+			SessionID: "session-1",
+			ChannelID: "channel-1",
+		}); err != nil {
+			return
+		}
+		result := readAgentOperationResult(t, r.Context(), conn)
+		if !result.OK {
+			t.Errorf("open result = %+v, want OK", result)
+			return
+		}
+		close(opened)
+	}))
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	client := &agent.Client{Config: agent.Config{
+		ServerURL: httpSrv.URL,
+		AgentID:   "agent-1",
+	}}
+	if _, err := client.Connect(ctx); err != nil {
+		t.Fatalf("Connect returned error: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- client.HandleControlMessages(ctx, agentRFC2217Resolver{control: control}, agent.TunnelDialer{ServerURL: httpSrv.URL})
+	}()
+
+	select {
+	case <-opened:
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for terminal session open")
+	}
+	control.session.waitForClose(t)
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("HandleControlMessages returned nil error, want closed connection error")
+		}
+	case <-ctx.Done():
+		t.Fatal("HandleControlMessages did not return after control connection closed")
+	}
+}
+
 func TestClientFetchChannelConfigsFiltersAgentAndConvertsSerialDefaults(t *testing.T) {
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/channels" {
@@ -811,6 +1098,26 @@ func receiveLogFrame(t *testing.T, ctx context.Context, frames <-chan protocol.L
 	case <-ctx.Done():
 		t.Fatal("timeout waiting for log frame")
 		return protocol.LogFrame{}
+	}
+}
+
+func readAgentOperationResult(t *testing.T, ctx context.Context, conn *websocket.Conn) protocol.OperationResult {
+	t.Helper()
+	var result protocol.OperationResult
+	if err := protocol.ReadJSON(ctx, conn, &result); err != nil {
+		t.Fatalf("read operation result returned error: %v", err)
+	}
+	return result
+}
+
+func receiveAgentOperationResult(t *testing.T, ctx context.Context, results <-chan protocol.OperationResult) protocol.OperationResult {
+	t.Helper()
+	select {
+	case result := <-results:
+		return result
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for operation result")
+		return protocol.OperationResult{}
 	}
 }
 

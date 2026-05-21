@@ -118,6 +118,9 @@ func (client *Client) ReadControl(ctx context.Context) (protocol.MessageType, []
 }
 
 func (client *Client) HandleControlMessages(ctx context.Context, resolver RFC2217ControlResolver, dialer TunnelDialer) error {
+	terminalSessions := make(map[string]terminalSession)
+	defer closeTerminalSessions(terminalSessions)
+
 	for {
 		messageType, data, err := client.ReadControl(ctx)
 		if err != nil {
@@ -133,10 +136,166 @@ func (client *Client) HandleControlMessages(ctx context.Context, resolver RFC221
 				return err
 			}
 			go client.handleOpenTunnel(ctx, open, resolver, dialer)
+		case protocol.MessageTerminalOpen:
+			var open protocol.TerminalOpen
+			if err := json.Unmarshal(data, &open); err != nil {
+				return err
+			}
+			client.handleTerminalOpen(ctx, open, resolver, terminalSessions)
+		case protocol.MessageTerminalClose:
+			var closeMessage protocol.TerminalClose
+			if err := json.Unmarshal(data, &closeMessage); err != nil {
+				return err
+			}
+			client.handleTerminalClose(ctx, closeMessage, terminalSessions)
+		case protocol.MessageTerminalWrite,
+			protocol.MessageSerialSetConfig,
+			protocol.MessageSerialSetDTR,
+			protocol.MessageSerialSetRTS,
+			protocol.MessageSerialSendBreak:
+			client.handleTerminalOperation(ctx, messageType, data, terminalSessions)
 		case protocol.MessageChannelSync:
 		default:
 			log.Printf("agent received unsupported control message type %q", messageType)
 		}
+	}
+}
+
+type terminalSession struct {
+	channelID string
+	session   serial.ControlSession
+}
+
+func closeTerminalSessions(sessions map[string]terminalSession) {
+	for sessionID, entry := range sessions {
+		_ = entry.session.Close()
+		delete(sessions, sessionID)
+	}
+}
+
+func (client *Client) handleTerminalOpen(ctx context.Context, open protocol.TerminalOpen, resolver RFC2217ControlResolver, sessions map[string]terminalSession) {
+	var err error
+	if open.SessionID == "" {
+		err = errors.New("terminal session_id is required")
+	} else if open.ChannelID == "" {
+		err = errors.New("terminal channel_id is required")
+	} else if _, exists := sessions[open.SessionID]; exists {
+		err = fmt.Errorf("terminal session %s already exists", open.SessionID)
+	} else if resolver == nil {
+		err = errors.New("terminal control resolver is not configured")
+	} else {
+		var control serial.SerialControl
+		control, _, err = resolver.RFC2217Control(ctx, open.ChannelID)
+		if err == nil {
+			var session serial.ControlSession
+			session, err = control.OpenControlSession(ctx, "web")
+			if err == nil {
+				sessions[open.SessionID] = terminalSession{channelID: open.ChannelID, session: session}
+			}
+		}
+	}
+	client.sendOperationResult(ctx, "", err)
+}
+
+func (client *Client) handleTerminalClose(ctx context.Context, closeMessage protocol.TerminalClose, sessions map[string]terminalSession) {
+	entry, err := terminalSessionFor(sessions, closeMessage.SessionID, closeMessage.ChannelID)
+	if err == nil {
+		err = entry.session.Close()
+		delete(sessions, closeMessage.SessionID)
+	}
+	client.sendOperationResult(ctx, "", err)
+}
+
+func (client *Client) handleTerminalOperation(ctx context.Context, messageType protocol.MessageType, data []byte, sessions map[string]terminalSession) {
+	requestID, err := client.applyTerminalOperation(ctx, messageType, data, sessions)
+	client.sendOperationResult(ctx, requestID, err)
+}
+
+func (client *Client) applyTerminalOperation(_ context.Context, messageType protocol.MessageType, data []byte, sessions map[string]terminalSession) (string, error) {
+	switch messageType {
+	case protocol.MessageTerminalWrite:
+		var msg protocol.TerminalWrite
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return "", err
+		}
+		entry, err := terminalSessionFor(sessions, msg.SessionID, msg.ChannelID)
+		if err != nil {
+			return msg.RequestID, err
+		}
+		return msg.RequestID, entry.session.Write(msg.Data)
+	case protocol.MessageSerialSetConfig:
+		var msg protocol.SerialSetConfig
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return "", err
+		}
+		entry, err := terminalSessionFor(sessions, msg.SessionID, msg.ChannelID)
+		if err != nil {
+			return msg.RequestID, err
+		}
+		return msg.RequestID, entry.session.SetConfig(serial.Config{
+			Baud:     msg.Baud,
+			DataBits: msg.DataBits,
+			Parity:   msg.Parity,
+			StopBits: msg.StopBits,
+			Flow:     msg.Flow,
+		})
+	case protocol.MessageSerialSetDTR:
+		var msg protocol.SerialSetDTR
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return "", err
+		}
+		entry, err := terminalSessionFor(sessions, msg.SessionID, msg.ChannelID)
+		if err != nil {
+			return msg.RequestID, err
+		}
+		return msg.RequestID, entry.session.SetDTR(msg.Value)
+	case protocol.MessageSerialSetRTS:
+		var msg protocol.SerialSetRTS
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return "", err
+		}
+		entry, err := terminalSessionFor(sessions, msg.SessionID, msg.ChannelID)
+		if err != nil {
+			return msg.RequestID, err
+		}
+		return msg.RequestID, entry.session.SetRTS(msg.Value)
+	case protocol.MessageSerialSendBreak:
+		var msg protocol.SerialSendBreak
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return "", err
+		}
+		entry, err := terminalSessionFor(sessions, msg.SessionID, msg.ChannelID)
+		if err != nil {
+			return msg.RequestID, err
+		}
+		return msg.RequestID, entry.session.SendBreak(time.Duration(msg.DurationMS) * time.Millisecond)
+	default:
+		return "", fmt.Errorf("unsupported terminal operation %q", messageType)
+	}
+}
+
+func terminalSessionFor(sessions map[string]terminalSession, sessionID, channelID string) (terminalSession, error) {
+	entry, ok := sessions[sessionID]
+	if !ok {
+		return terminalSession{}, fmt.Errorf("terminal session %s not found", sessionID)
+	}
+	if channelID != "" && entry.channelID != channelID {
+		return terminalSession{}, fmt.Errorf("terminal session %s belongs to channel %s", sessionID, entry.channelID)
+	}
+	return entry, nil
+}
+
+func (client *Client) sendOperationResult(ctx context.Context, requestID string, err error) {
+	result := protocol.OperationResult{
+		Type:      protocol.MessageOperationResult,
+		RequestID: requestID,
+		OK:        err == nil,
+	}
+	if err != nil {
+		result.Error = err.Error()
+	}
+	if sendErr := client.SendControl(ctx, result); sendErr != nil && ctx.Err() == nil {
+		log.Printf("send operation result: %v", sendErr)
 	}
 }
 
