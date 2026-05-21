@@ -63,7 +63,7 @@ central-server 是统一入口:
 每台接 USB Hub 的 Linux 主机运行一个 host-agent:
 
 1. Go 单二进制，交叉编译到 `linux/amd64`、`linux/arm64`、`linux/armv7`。
-2. 以 root + systemd service 运行。
+2. 以非 root systemd service 运行；安装脚本由 root 执行，仅负责安装 binary/unit、设置 data dir ownership、按需加入 dialout，host-agent 运行时不应需要 sudo/root。
 3. 首次连接 central-server 后自动注册，状态为 pending。
 4. 管理员在 Web UI 确认并重命名后，agent 进入 active 状态。
 5. 生成本机 udev rules 和 `/dev/lab/...` symlink。

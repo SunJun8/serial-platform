@@ -66,7 +66,7 @@
 部署模型：
 
 - central-server：Go 后端，SQLite + 文件分片，嵌入 React 静态资源，对外提供 Web/API/CLI/RFC2217。
-- host-agent：Go 单二进制，root + systemd 运行，交叉编译到 Linux amd64/arm64/armv7。
+- host-agent：Go 单二进制，以非 root systemd service 运行，交叉编译到 Linux amd64/arm64/armv7；安装脚本由 root 执行，仅负责安装 binary/unit、设置 data dir ownership、按需加入 dialout，运行时不应需要 sudo/root。
 - host-agent 节点不应要求 Go/Node/Python 构建环境。
 
 ## 关键设计约束
