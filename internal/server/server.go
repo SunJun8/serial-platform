@@ -1,6 +1,7 @@
 package server
 
 import (
+	"net"
 	"net/http"
 	"time"
 
@@ -11,12 +12,15 @@ import (
 type ServerConfig struct {
 	DB             *storage.DB
 	LogDir         string
+	LogSegmentSize int64
 	SerialResolver func(channelID string) (serial.SerialControl, bool)
+	RFC2217Listen  func(network, address string) (net.Listener, error)
 }
 
 type Server struct {
 	db             *storage.DB
 	logDir         string
+	logSegmentSize int64
 	mux            *http.ServeMux
 	agentRegistry  *agentRegistry
 	tunnels        *TunnelRegistry
@@ -24,12 +28,18 @@ type Server struct {
 	terminalOps    *terminalOperationRegistry
 	liveLog        *LiveLogHub
 	serialResolver func(channelID string) (serial.SerialControl, bool)
+	rfc2217Listen  func(network, address string) (net.Listener, error)
 }
 
 func New(config ServerConfig) *Server {
+	rfc2217Listen := config.RFC2217Listen
+	if rfc2217Listen == nil {
+		rfc2217Listen = net.Listen
+	}
 	srv := &Server{
 		db:             config.DB,
 		logDir:         config.LogDir,
+		logSegmentSize: config.LogSegmentSize,
 		mux:            http.NewServeMux(),
 		agentRegistry:  newAgentRegistry(),
 		tunnels:        NewTunnelRegistry(5 * time.Second),
@@ -37,6 +47,7 @@ func New(config ServerConfig) *Server {
 		terminalOps:    newTerminalOperationRegistry(),
 		liveLog:        NewLiveLogHub(),
 		serialResolver: config.SerialResolver,
+		rfc2217Listen:  rfc2217Listen,
 	}
 	srv.routes()
 	return srv

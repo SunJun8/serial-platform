@@ -833,6 +833,89 @@ func TestClientSendLogFramesLoopStopsWhenFramesCloseBeforeReconnect(t *testing.T
 	}
 }
 
+func TestClientSendLogFramesLoopDrainsFramesDuringOutage(t *testing.T) {
+	received := make(chan protocol.LogFrame, 1)
+
+	var mu sync.Mutex
+	acceptLogs := false
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ws/logs" {
+			http.NotFound(w, r)
+			return
+		}
+		mu.Lock()
+		accept := acceptLogs
+		mu.Unlock()
+		if accept {
+			conn, err := websocket.Accept(w, r, nil)
+			if err != nil {
+				return
+			}
+			defer conn.Close(websocket.StatusNormalClosure, "")
+			messageType, payload, err := conn.Read(r.Context())
+			if err != nil || messageType != websocket.MessageBinary {
+				return
+			}
+			frame, err := protocol.DecodeLogFrame(payload)
+			if err == nil {
+				received <- frame
+			}
+			return
+		}
+		http.Error(w, "temporary outage", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	frames := make(chan protocol.LogFrame)
+	client := &agent.Client{Config: agent.Config{ServerURL: httpSrv.URL}}
+	done := make(chan error, 1)
+	go func() {
+		done <- client.SendLogFramesLoop(ctx, frames, time.Hour)
+	}()
+
+	accepted := make(chan struct{})
+	go func() {
+		for seq := uint64(1); seq <= 3; seq++ {
+			frames <- testLogFrame(seq, "queued\n")
+		}
+		close(frames)
+		close(accepted)
+	}()
+
+	select {
+	case <-accepted:
+	case <-time.After(time.Second):
+		t.Fatal("SendLogFramesLoop did not drain incoming frames during outage")
+	}
+
+	mu.Lock()
+	acceptLogs = true
+	mu.Unlock()
+	gapFrame := receiveLogFrame(t, ctx, received)
+	if gapFrame.Seq != 3 {
+		t.Fatalf("gap frame Seq = %d, want last dropped sequence number", gapFrame.Seq)
+	}
+	if gapFrame.Flags&protocol.FlagLogGap == 0 {
+		t.Fatalf("gap frame Flags = %v, want FlagLogGap", gapFrame.Flags)
+	}
+	if len(gapFrame.Payload) != 0 {
+		t.Fatalf("gap frame Payload = %q, want empty payload", gapFrame.Payload)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("SendLogFramesLoop returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for SendLogFramesLoop to stop")
+	}
+}
+
 func TestRuntimeScansAndForwardsReconciledEvents(t *testing.T) {
 	events := make(chan serial.Event)
 	forwarded := make(chan serial.Event, 1)
@@ -1018,6 +1101,52 @@ func TestRuntimeForwardsStatusesWhenSnapshotForwardFails(t *testing.T) {
 		t.Fatalf("Run returned before forwarding status after snapshot error: %v", err)
 	case <-time.After(time.Second):
 		t.Fatal("runtime did not forward statuses after snapshot forward error")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != context.Canceled {
+			t.Fatalf("Run error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not stop after context cancellation")
+	}
+}
+
+func TestRuntimeForwardsEmptySnapshotToClearStaleCandidates(t *testing.T) {
+	snapshots := make(chan []agent.DiscoveredDevice, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	runtime := agent.NewRuntime(agent.RuntimeConfig{
+		ScanInterval: time.Hour,
+		Discover: func(agent.DiscoveryConfig) ([]agent.DiscoveredDevice, error) {
+			return nil, nil
+		},
+		Reconciler: &runtimeFakeReconciler{
+			result: agent.ReconcileResult{},
+		},
+		ForwardSnapshot: func(_ context.Context, devices []agent.DiscoveredDevice) error {
+			snapshots <- append([]agent.DiscoveredDevice(nil), devices...)
+			return nil
+		},
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runtime.Run(ctx)
+	}()
+
+	select {
+	case got := <-snapshots:
+		if len(got) != 0 {
+			t.Fatalf("forwarded snapshot length = %d, want 0", len(got))
+		}
+	case err := <-done:
+		t.Fatalf("Run returned before forwarding empty snapshot: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not forward empty candidate snapshot")
 	}
 
 	cancel()

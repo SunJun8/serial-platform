@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -77,26 +76,7 @@ func (srv *Server) handleLogDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-
-	if format == "raw" {
-		var out bytes.Buffer
-		if err := logstore.ExportRawSegments(sources, logstore.ExportOptions{
-			IncludeRX: includeRX,
-			IncludeTX: includeTX,
-			From:      from,
-			To:        to,
-		}, &out); err != nil {
-			writeError(w, err)
-			return
-		}
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(out.Bytes())
-		return
-	}
-
-	var out bytes.Buffer
-	if err := logstore.ExportTextSegments(sources, logstore.ExportOptions{
+	exportOptions := logstore.ExportOptions{
 		IncludeRX:        includeRX,
 		IncludeTX:        includeTX,
 		IncludeTimestamp: includeTimestamp,
@@ -104,13 +84,26 @@ func (srv *Server) handleLogDownload(w http.ResponseWriter, r *http.Request) {
 		StripANSI:        stripANSI,
 		From:             from,
 		To:               to,
-	}, &out); err != nil {
+	}
+	if err := logstore.ValidateSegments(sources, exportOptions); err != nil {
 		writeError(w, err)
 		return
 	}
+
+	if format == "raw" {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+		if err := logstore.ExportRawSegments(sources, exportOptions, w); err != nil {
+			return
+		}
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(out.Bytes())
+	if err := logstore.ExportTextSegments(sources, exportOptions, w); err != nil {
+		return
+	}
 }
 
 func parseLogDownloadTime(value string, fallback time.Time) (time.Time, error) {

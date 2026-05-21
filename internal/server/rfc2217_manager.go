@@ -130,7 +130,7 @@ func (m *rfc2217Manager) start(ctx context.Context, channel storage.Channel) err
 	m.mu.Unlock()
 
 	addr := net.JoinHostPort(m.bindHost, strconv.Itoa(channel.RFC2217Port))
-	netListener, err := net.Listen("tcp", addr)
+	netListener, err := m.srv.rfc2217Listen("tcp", addr)
 	if err != nil {
 		return err
 	}

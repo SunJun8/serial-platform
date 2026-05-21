@@ -23,6 +23,7 @@ type Worker struct {
 	owner       string
 	sessionID   uint64
 	nextID      uint64
+	logGap      bool
 }
 
 func NewWorker(channelID string, defaultConfig Config, backend Backend) *Worker {
@@ -72,7 +73,7 @@ func (w *Worker) Run(ctx context.Context) {
 	for {
 		n, err := w.backend.Read(buf)
 		if n > 0 {
-			w.emit(DirectionRX, buf[:n])
+			w.tryEmit(DirectionRX, buf[:n])
 		}
 		if err != nil {
 			return
@@ -95,6 +96,36 @@ func (w *Worker) emit(direction Direction, data []byte) {
 	w.events <- event
 }
 
+func (w *Worker) tryEmit(direction Direction, data []byte) {
+	logGap := w.consumeLogGap()
+	event := Event{
+		ChannelID: w.channelID,
+		Direction: direction,
+		Timestamp: time.Now(),
+		LogGap:    logGap,
+		Data:      append([]byte(nil), data...),
+	}
+	select {
+	case w.events <- event:
+	default:
+		w.markLogGap()
+	}
+}
+
+func (w *Worker) markLogGap() {
+	w.mu.Lock()
+	w.logGap = true
+	w.mu.Unlock()
+}
+
+func (w *Worker) consumeLogGap() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	logGap := w.logGap
+	w.logGap = false
+	return logGap
+}
+
 type workerSession struct {
 	worker *Worker
 	owner  string
@@ -113,7 +144,7 @@ func (s *workerSession) Write(data []byte) error {
 	if n != len(data) {
 		return io.ErrShortWrite
 	}
-	s.worker.emit(DirectionTX, data)
+	s.worker.tryEmit(DirectionTX, data)
 	return nil
 }
 

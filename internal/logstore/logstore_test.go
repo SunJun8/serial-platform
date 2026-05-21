@@ -117,6 +117,62 @@ func TestSegmentWriterWritesAndExportsText(t *testing.T) {
 	}
 }
 
+func TestSegmentWriterRollsWhenMaxBytesWouldBeExceeded(t *testing.T) {
+	dir := t.TempDir()
+	writer, err := NewSegmentWriter(dir, "channel-1", 128)
+	if err != nil {
+		t.Fatalf("NewSegmentWriter returned error: %v", err)
+	}
+
+	first := protocol.LogFrame{
+		ChannelID:   "channel-1",
+		Seq:         1,
+		TimestampNS: time.Unix(1700000000, 0).UnixNano(),
+		Direction:   protocol.DirectionRX,
+		Flags:       protocol.FlagRaw,
+		Payload:     []byte(strings.Repeat("a", 80)),
+	}
+	second := first
+	second.Seq = 2
+	second.TimestampNS = time.Unix(1700000001, 0).UnixNano()
+	second.Payload = []byte(strings.Repeat("b", 80))
+
+	if err := writer.WriteFrame(first); err != nil {
+		t.Fatalf("first WriteFrame returned error: %v", err)
+	}
+	firstSegment := writer.Info()
+	if err := writer.WriteFrame(second); err != nil {
+		t.Fatalf("second WriteFrame returned error: %v", err)
+	}
+	secondSegment, err := writer.Close()
+	if err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+
+	if firstSegment.RelativePath == secondSegment.RelativePath {
+		t.Fatalf("writer did not roll segment path: %q", firstSegment.RelativePath)
+	}
+	if firstSegment.FrameCount != 1 || secondSegment.FrameCount != 1 {
+		t.Fatalf("segment frame counts = %d, %d, want 1, 1", firstSegment.FrameCount, secondSegment.FrameCount)
+	}
+
+	var firstOut bytes.Buffer
+	if err := ExportText([]string{filepath.Join(dir, firstSegment.RelativePath)}, ExportOptions{IncludeRX: true}, &firstOut); err != nil {
+		t.Fatalf("ExportText first segment returned error: %v", err)
+	}
+	if !strings.Contains(firstOut.String(), strings.Repeat("a", 80)) {
+		t.Fatalf("first segment export %q does not contain first payload", firstOut.String())
+	}
+
+	var secondOut bytes.Buffer
+	if err := ExportText([]string{filepath.Join(dir, secondSegment.RelativePath)}, ExportOptions{IncludeRX: true}, &secondOut); err != nil {
+		t.Fatalf("ExportText second segment returned error: %v", err)
+	}
+	if !strings.Contains(secondOut.String(), strings.Repeat("b", 80)) {
+		t.Fatalf("second segment export %q does not contain second payload", secondOut.String())
+	}
+}
+
 func TestExportTextFiltersDirections(t *testing.T) {
 	dir := t.TempDir()
 	segmentPath := writeTestSegment(t, dir,

@@ -8,10 +8,10 @@ test-unit:
 	go test $(GO_TEST_PACKAGES)
 
 test-real-serial-soft:
-	REAL_SERIAL_DEV="$(REAL_SERIAL_DEV)" REAL_SERIAL_SOFT=1 REAL_SERIAL_REQUIRED= go test -v ./internal/e2e -run TestRealSerialLoopback -count=1
+	REAL_SERIAL_DEV="$(REAL_SERIAL_DEV)" REAL_SERIAL_BAUD="$(REAL_SERIAL_BAUD)" REAL_SERIAL_EXPECT_LOOPBACK="$(REAL_SERIAL_EXPECT_LOOPBACK)" REAL_SERIAL_SOFT=1 REAL_SERIAL_REQUIRED= go test -v ./internal/e2e -run 'TestRealSerial(Loopback|PlatformWorkflow)' -count=1
 
 test-real-serial:
-	REAL_SERIAL_DEV="$(REAL_SERIAL_DEV)" REAL_SERIAL_REQUIRED=1 go test -v ./internal/e2e -run TestRealSerialLoopback -count=1
+	REAL_SERIAL_DEV="$(REAL_SERIAL_DEV)" REAL_SERIAL_BAUD="$(REAL_SERIAL_BAUD)" REAL_SERIAL_EXPECT_LOOPBACK="$${REAL_SERIAL_EXPECT_LOOPBACK:-1}" REAL_SERIAL_REQUIRED=1 go test -v ./internal/e2e -run 'TestRealSerial(Loopback|PlatformWorkflow)' -count=1
 
 fmt:
 	gofmt -w cmd internal

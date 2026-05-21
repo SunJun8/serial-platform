@@ -61,6 +61,12 @@ func ExportRawSegments(sources []SegmentSource, opts ExportOptions, out io.Write
 	})
 }
 
+func ValidateSegments(sources []SegmentSource, opts ExportOptions) error {
+	return exportFrames(sources, opts, func([]byte, protocol.LogFrame) error {
+		return nil
+	})
+}
+
 func segmentSourcesFromPaths(paths []string) []SegmentSource {
 	sources := make([]SegmentSource, 0, len(paths))
 	for _, path := range paths {

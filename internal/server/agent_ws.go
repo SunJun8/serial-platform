@@ -224,6 +224,9 @@ func (srv *Server) handleDeviceSnapshot(agentID string, snapshot protocol.Device
 		}
 	}
 	now := time.Now().UTC()
+	if err := srv.db.DeleteCandidatesByAgent(agentID); err != nil {
+		return err
+	}
 	for _, device := range snapshot.Devices {
 		if device.IDPath != "" {
 			if _, configured := configuredIDPaths[device.IDPath]; configured {

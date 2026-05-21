@@ -51,6 +51,12 @@ func (srv *Server) handleLogWebSocket(w http.ResponseWriter, r *http.Request) {
 			_ = conn.Close(websocket.StatusInternalError, err.Error())
 			return
 		}
+		for _, info := range writer.ClosedSegments() {
+			if err := srv.upsertLogSegment(frame.ChannelID, info, storage.LogSegmentStatusClosed); err != nil {
+				_ = conn.Close(websocket.StatusInternalError, err.Error())
+				return
+			}
+		}
 		if err := srv.upsertLogSegment(frame.ChannelID, writer.Info(), storage.LogSegmentStatusActive); err != nil {
 			_ = conn.Close(websocket.StatusInternalError, err.Error())
 			return
@@ -63,7 +69,11 @@ func (srv *Server) logWriterForChannel(writers map[string]*logstore.SegmentWrite
 	if writer, ok := writers[channelID]; ok {
 		return writer, nil
 	}
-	writer, err := logstore.NewSegmentWriter(srv.logDir, channelID, defaultLogSegmentMaxBytes)
+	maxBytes := srv.logSegmentSize
+	if maxBytes <= 0 {
+		maxBytes = defaultLogSegmentMaxBytes
+	}
+	writer, err := logstore.NewSegmentWriter(srv.logDir, channelID, maxBytes)
 	if err != nil {
 		return nil, err
 	}

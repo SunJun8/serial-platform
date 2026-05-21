@@ -152,3 +152,74 @@ func TestWorkerEmitsRXFromBackend(t *testing.T) {
 		t.Fatal("timeout waiting for RX event")
 	}
 }
+
+func TestWorkerDropsEventsWhenConsumerIsBackpressured(t *testing.T) {
+	backend := NewFakeBackend()
+	worker := NewWorker("channel-1", DefaultConfig(), backend)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go worker.Run(ctx)
+
+	injected := make(chan struct{})
+	go func() {
+		for i := 0; i < 128; i++ {
+			backend.InjectRX([]byte("boot\n"))
+		}
+		close(injected)
+	}()
+	select {
+	case <-injected:
+	case <-time.After(time.Second):
+		t.Fatal("worker stopped reading backend when event consumer was backpressured")
+	}
+
+	cancel()
+	done := make(chan struct{})
+	go func() {
+		_ = backend.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("worker remained blocked on event delivery under backpressure")
+	}
+}
+
+func TestWorkerMarksLogGapAfterDroppedEvent(t *testing.T) {
+	backend := NewFakeBackend()
+	worker := NewWorker("channel-1", DefaultConfig(), backend)
+	session, err := worker.OpenControlSession(context.Background(), "owner")
+	if err != nil {
+		t.Fatalf("OpenControlSession returned error: %v", err)
+	}
+
+	for i := 0; i < 65; i++ {
+		if err := session.Write([]byte("AT\r\n")); err != nil {
+			t.Fatalf("Write %d returned error: %v", i, err)
+		}
+	}
+
+	for i := 0; i < 64; i++ {
+		select {
+		case event := <-worker.Events():
+			if event.LogGap {
+				t.Fatalf("event %d has LogGap before observed drop", i)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timeout waiting for queued event %d", i)
+		}
+	}
+
+	if err := session.Write([]byte("AT\r\n")); err != nil {
+		t.Fatalf("Write after drop returned error: %v", err)
+	}
+	select {
+	case event := <-worker.Events():
+		if !event.LogGap {
+			t.Fatal("next event after dropped event did not mark LogGap")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for log gap event")
+	}
+}

@@ -28,6 +28,7 @@ type Event struct {
 	ChannelID string
 	Direction Direction
 	Timestamp time.Time
+	LogGap    bool
 	Data      []byte
 }
 

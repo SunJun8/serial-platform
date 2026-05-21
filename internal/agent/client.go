@@ -424,8 +424,16 @@ func (client *Client) SendLogFramesLoop(ctx context.Context, frames <-chan proto
 				return ctx.Err()
 			}
 			log.Printf("connect log stream: %v", err)
-			if err := sleepContext(ctx, backoff); err != nil {
+			closed, dropped, err := sleepContextDiscardingLogFrames(ctx, frames, backoff)
+			if err != nil {
 				return err
+			}
+			if dropped > 0 {
+				pending = logGapFrameAfterDrop(pending, dropped)
+				hasPending = true
+			}
+			if closed && !hasPending {
+				return nil
 			}
 			continue
 		}
@@ -489,10 +497,46 @@ func (client *Client) SendLogFramesLoop(ctx context.Context, frames <-chan proto
 		}
 
 		_ = conn.Close(websocket.StatusNormalClosure, "")
-		if err := sleepContext(ctx, backoff); err != nil {
+		closed, dropped, err := sleepContextDiscardingLogFrames(ctx, frames, backoff)
+		if err != nil {
 			return err
 		}
+		if dropped > 0 {
+			pending = logGapFrameAfterDrop(pending, dropped)
+			hasPending = true
+		}
+		if closed && !hasPending {
+			return nil
+		}
 	}
+}
+
+func sleepContextDiscardingLogFrames(ctx context.Context, frames <-chan protocol.LogFrame, duration time.Duration) (bool, uint64, error) {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	var dropped uint64
+	for {
+		select {
+		case <-ctx.Done():
+			return false, dropped, ctx.Err()
+		case _, ok := <-frames:
+			if !ok {
+				return true, dropped, nil
+			}
+			dropped++
+		case <-timer.C:
+			return false, dropped, nil
+		}
+	}
+}
+
+func logGapFrameAfterDrop(previous protocol.LogFrame, dropped uint64) protocol.LogFrame {
+	next := previous
+	next.Seq += dropped
+	next.TimestampNS = time.Now().UTC().UnixNano()
+	next.Flags |= protocol.FlagLogGap
+	next.Payload = nil
+	return next
 }
 
 func sleepContext(ctx context.Context, duration time.Duration) error {
@@ -692,7 +736,7 @@ func (runtime *Runtime) scan(ctx context.Context) error {
 		runtime.startForwarding(ctx, stream)
 	}
 	var forwardErr error
-	if len(result.Candidates) > 0 && runtime.forwardSnapshot != nil {
+	if runtime.forwardSnapshot != nil {
 		if err := runtime.forwardSnapshot(ctx, result.Candidates); err != nil {
 			forwardErr = errors.Join(forwardErr, err)
 		}

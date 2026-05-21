@@ -32,6 +32,7 @@ type SegmentWriter struct {
 	frameCount int64
 	startTime  time.Time
 	endTime    time.Time
+	closed     []SegmentInfo
 }
 
 func NewSegmentWriter(root, channelID string, maxBytes int64) (*SegmentWriter, error) {
@@ -39,23 +40,34 @@ func NewSegmentWriter(root, channelID string, maxBytes int64) (*SegmentWriter, e
 		return nil, err
 	}
 
-	now := time.Now().UTC()
-	dirRel := filepath.Join(channelID, now.Format("2006"), now.Format("01"), now.Format("02"), now.Format("15"))
-	dirAbs := filepath.Join(root, dirRel)
-	if err := os.MkdirAll(dirAbs, 0o755); err != nil {
-		return nil, err
-	}
-	rel, file, err := createSegmentFile(dirRel, dirAbs, now)
-	if err != nil {
-		return nil, err
-	}
-	return &SegmentWriter{
+	writer := &SegmentWriter{
 		root:      root,
 		channelID: channelID,
 		maxBytes:  maxBytes,
-		file:      file,
-		relPath:   rel,
-	}, nil
+	}
+	if err := writer.openNewSegment(time.Now().UTC()); err != nil {
+		return nil, err
+	}
+	return writer, nil
+}
+
+func (w *SegmentWriter) openNewSegment(now time.Time) error {
+	dirRel := filepath.Join(w.channelID, now.Format("2006"), now.Format("01"), now.Format("02"), now.Format("15"))
+	dirAbs := filepath.Join(w.root, dirRel)
+	if err := os.MkdirAll(dirAbs, 0o755); err != nil {
+		return err
+	}
+	rel, file, err := createSegmentFile(dirRel, dirAbs, now)
+	if err != nil {
+		return err
+	}
+	w.file = file
+	w.relPath = rel
+	w.sizeBytes = 0
+	w.frameCount = 0
+	w.startTime = time.Time{}
+	w.endTime = time.Time{}
+	return nil
 }
 
 func validateChannelID(channelID string) error {
@@ -103,6 +115,12 @@ func (w *SegmentWriter) WriteFrame(frame protocol.LogFrame) error {
 	if len(encoded) > math.MaxUint32 {
 		return errors.New("encoded log frame is too long")
 	}
+	frameBytes := int64(4 + len(encoded))
+	if w.maxBytes > 0 && w.frameCount > 0 && w.sizeBytes+frameBytes > w.maxBytes {
+		if err := w.rotate(time.Unix(0, frame.TimestampNS).UTC()); err != nil {
+			return err
+		}
+	}
 
 	var lenBuf [4]byte
 	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(encoded)))
@@ -113,7 +131,7 @@ func (w *SegmentWriter) WriteFrame(frame protocol.LogFrame) error {
 		return err
 	}
 
-	w.sizeBytes += int64(4 + len(encoded))
+	w.sizeBytes += frameBytes
 	w.frameCount++
 	ts := time.Unix(0, frame.TimestampNS).UTC()
 	if w.startTime.IsZero() {
@@ -121,6 +139,25 @@ func (w *SegmentWriter) WriteFrame(frame protocol.LogFrame) error {
 	}
 	w.endTime = ts
 	return nil
+}
+
+func (w *SegmentWriter) rotate(now time.Time) error {
+	info := w.Info()
+	if err := w.file.Close(); err != nil {
+		w.file = nil
+		return err
+	}
+	w.file = nil
+	if info.FrameCount > 0 {
+		w.closed = append(w.closed, info)
+	}
+	return w.openNewSegment(now)
+}
+
+func (w *SegmentWriter) ClosedSegments() []SegmentInfo {
+	closed := append([]SegmentInfo(nil), w.closed...)
+	w.closed = nil
+	return closed
 }
 
 func (w *SegmentWriter) Info() SegmentInfo {

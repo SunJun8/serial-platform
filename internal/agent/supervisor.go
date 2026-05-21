@@ -41,12 +41,16 @@ func SerialEventToLogFrame(seq uint64, event serial.Event) protocol.LogFrame {
 	if event.Direction == serial.DirectionTX {
 		direction = protocol.DirectionTX
 	}
+	flags := protocol.FlagRaw
+	if event.LogGap {
+		flags |= protocol.FlagLogGap
+	}
 	return protocol.LogFrame{
 		ChannelID:   event.ChannelID,
 		Seq:         seq,
 		TimestampNS: event.Timestamp.UnixNano(),
 		Direction:   direction,
-		Flags:       protocol.FlagRaw,
+		Flags:       flags,
 		Payload:     append([]byte(nil), event.Data...),
 	}
 }

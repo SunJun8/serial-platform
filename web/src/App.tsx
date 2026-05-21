@@ -805,6 +805,16 @@ function TerminalView({ channels }: { channels: Channel[] }) {
   const connected = terminalStatus === 'connected';
 
   useEffect(() => {
+    if (!selectedChannel) {
+      setBaud('115200');
+      return;
+    }
+    if (!connected) {
+      setBaud(String(selectedChannel.DefaultBaud || 115200));
+    }
+  }, [connected, selectedChannel]);
+
+  useEffect(() => {
     if (!selectedChannelID) {
       setSelectedID('');
       return;

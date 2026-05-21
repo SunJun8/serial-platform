@@ -155,6 +155,70 @@ func TestLogWebSocketRegistersActiveSegmentBeforeClose(t *testing.T) {
 	}
 }
 
+func TestLogWebSocketClosesRolledSegments(t *testing.T) {
+	root := t.TempDir()
+	db, err := storage.Open(filepath.Join(root, "meta.db"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	logDir := filepath.Join(root, "logs")
+	srv := server.New(server.ServerConfig{DB: db, LogDir: logDir, LogSegmentSize: 128})
+	httpSrv := httptest.NewServer(srv)
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	conn := dialLogWebSocket(t, ctx, httpSrv.URL)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	now := time.Now().UTC()
+	for i, payload := range []string{strings.Repeat("a", 80), strings.Repeat("b", 80)} {
+		encoded, err := protocol.EncodeLogFrame(protocol.LogFrame{
+			ChannelID:   "channel-1",
+			Seq:         uint64(i + 1),
+			TimestampNS: now.Add(time.Duration(i) * time.Second).UnixNano(),
+			Direction:   protocol.DirectionRX,
+			Flags:       protocol.FlagRaw,
+			Payload:     []byte(payload),
+		})
+		if err != nil {
+			t.Fatalf("EncodeLogFrame returned error: %v", err)
+		}
+		if err := conn.Write(ctx, websocket.MessageBinary, encoded); err != nil {
+			t.Fatalf("conn.Write returned error: %v", err)
+		}
+	}
+
+	var segments []storage.LogSegment
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		var err error
+		segments, err = db.ListLogSegments("channel-1", now.Add(-time.Second), now.Add(3*time.Second))
+		if err != nil {
+			t.Fatalf("ListLogSegments returned error: %v", err)
+		}
+		if len(segments) == 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(segments) != 2 {
+		t.Fatalf("len(segments) = %d, want 2", len(segments))
+	}
+	if segments[0].Status != storage.LogSegmentStatusClosed {
+		t.Fatalf("first segment status = %q, want closed", segments[0].Status)
+	}
+	if segments[1].Status != storage.LogSegmentStatusActive {
+		t.Fatalf("second segment status = %q, want active", segments[1].Status)
+	}
+	if segments[0].Path == segments[1].Path {
+		t.Fatalf("rolled segments used same path %q", segments[0].Path)
+	}
+}
+
 func TestLogWebSocketRejectsInvalidChannelIDWithoutSegment(t *testing.T) {
 	tests := []struct {
 		name      string

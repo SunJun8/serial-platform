@@ -389,6 +389,45 @@ func TestLogDownloadRejectsUnsafeSegmentPath(t *testing.T) {
 	}
 }
 
+func TestLogDownloadReturnsErrorBeforeStreamingMissingSegment(t *testing.T) {
+	root := t.TempDir()
+	db, logDir := openLogDownloadDB(t, root)
+	start := time.Date(2026, 5, 19, 0, 0, 0, 0, time.UTC)
+	if err := db.InsertLogSegment(storage.LogSegment{
+		ChannelID:  "channel-1",
+		Path:       "channel-1/missing.rlog",
+		StartTime:  start,
+		EndTime:    start.Add(time.Second),
+		SizeBytes:  1,
+		FrameCount: 1,
+		Status:     storage.LogSegmentStatusClosed,
+	}); err != nil {
+		t.Fatalf("InsertLogSegment returned error: %v", err)
+	}
+
+	srv := server.New(server.ServerConfig{DB: db, LogDir: logDir})
+	query := url.Values{
+		"channel_id": {"channel-1"},
+		"from":       {start.Add(-time.Second).Format(time.RFC3339Nano)},
+		"to":         {start.Add(time.Minute).Format(time.RFC3339Nano)},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/logs/download?"+query.Encode(), nil)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if body["error"] == "" {
+		t.Fatalf("error body = %+v, want non-empty error", body)
+	}
+}
+
 func openLogDownloadDB(t *testing.T, root string) (*storage.DB, string) {
 	t.Helper()
 

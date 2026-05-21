@@ -284,6 +284,54 @@ func TestAgentWebSocketStoresCandidatesFromDeviceSnapshot(t *testing.T) {
 	})
 }
 
+func TestAgentWebSocketSnapshotRemovesStaleCandidates(t *testing.T) {
+	db := newAgentWSTestDB(t)
+	srv := server.New(server.ServerConfig{DB: db})
+	httpSrv := httptest.NewServer(srv)
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	conn := dialAgentWS(t, ctx, httpSrv.URL)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	writeAgentHelloAndReadAccepted(t, ctx, conn, "agent-1")
+
+	if err := protocol.WriteJSON(ctx, conn, protocol.DeviceSnapshot{
+		Type:    protocol.MessageDeviceSnapshot,
+		AgentID: "agent-1",
+		Devices: []protocol.DeviceIdentity{
+			{DevName: "/dev/ttyUSB0", IDPath: "id-path", PermissionOK: true},
+		},
+	}); err != nil {
+		t.Fatalf("protocol.WriteJSON initial snapshot returned error: %v", err)
+	}
+	requireEventually(t, func() bool {
+		candidates, err := db.ListCandidates()
+		if err != nil {
+			t.Fatalf("ListCandidates returned error: %v", err)
+		}
+		return len(candidates) == 1
+	})
+
+	if err := protocol.WriteJSON(ctx, conn, protocol.DeviceSnapshot{
+		Type:    protocol.MessageDeviceSnapshot,
+		AgentID: "agent-1",
+		Devices: nil,
+	}); err != nil {
+		t.Fatalf("protocol.WriteJSON empty snapshot returned error: %v", err)
+	}
+
+	requireEventually(t, func() bool {
+		candidates, err := db.ListCandidates()
+		if err != nil {
+			t.Fatalf("ListCandidates returned error: %v", err)
+		}
+		return len(candidates) == 0
+	})
+}
+
 func TestAgentWebSocketRejectsBinaryControlMessage(t *testing.T) {
 	db := newAgentWSTestDB(t)
 	srv := server.New(server.ServerConfig{DB: db})
