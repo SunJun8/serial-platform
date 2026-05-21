@@ -21,21 +21,48 @@ body {
 
 button,
 input,
-select {
+select,
+a.button-link {
   font: inherit;
 }
 
 button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
   border: 1px solid #b9c0ba;
   border-radius: 6px;
   background: #ffffff;
   color: #1e2421;
   cursor: pointer;
   min-height: 32px;
+  padding: 0 10px;
 }
 
-button:hover {
+button:hover,
+a.button-link:hover {
   border-color: #6f7e73;
+}
+
+button:disabled,
+a.button-link.disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+a.button-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid #b9c0ba;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #1e2421;
+  text-decoration: none;
 }
 
 .shell {
@@ -234,7 +261,7 @@ small {
 }
 
 .view-title div,
-.view-title button {
+.view-action {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -246,12 +273,14 @@ small {
   font-weight: 700;
 }
 
-.view-title button {
-  padding: 0 10px;
+.view-action {
+  color: #526059;
+  font-size: 13px;
 }
 
 .split-layout,
 .workflow,
+.channels-layout,
 .terminal-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.6fr) minmax(280px, 0.7fr);
@@ -260,8 +289,9 @@ small {
 }
 
 .workflow,
+.channels-layout,
 .terminal-layout {
-  grid-template-columns: minmax(260px, 360px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
 }
 
 .terminal-layout {
@@ -403,16 +433,15 @@ td small {
 }
 
 .topology-list,
-.step-list,
 .controls,
-.quota-grid {
+.quota-grid,
+.dense-form {
   display: grid;
   gap: 8px;
   padding: 12px;
 }
 
 .topology-row,
-.step,
 .quota {
   display: flex;
   align-items: center;
@@ -447,6 +476,11 @@ td small {
   padding: 12px 12px 0;
 }
 
+.dense-form .field,
+.compact-field {
+  padding: 0;
+}
+
 .field span,
 .toggle {
   color: #526059;
@@ -454,37 +488,14 @@ td small {
 }
 
 .field input,
-.field select {
+.field select,
+.log-export-form input,
+.log-export-form select {
   min-height: 32px;
   min-width: 0;
   border: 1px solid #b9c0ba;
   border-radius: 6px;
   background: #ffffff;
-}
-
-.step {
-  justify-content: flex-start;
-}
-
-.step span {
-  display: inline-grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: #dde6da;
-  color: #263329;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.step.waiting {
-  color: #67706a;
-}
-
-.step.blocked {
-  background: #f7eeee;
-  color: #8a351d;
 }
 
 .detail-grid {
@@ -515,6 +526,11 @@ td small {
   font-size: 13px;
 }
 
+.detail-grid.compact {
+  grid-template-columns: 1fr;
+  padding: 4px 0 0;
+}
+
 .terminal-panel {
   display: grid;
   grid-template-rows: auto minmax(320px, 1fr) auto;
@@ -522,10 +538,16 @@ td small {
 
 .terminal-output {
   min-height: 320px;
+  max-height: calc(100vh - 230px);
+  overflow: auto;
   padding: 12px;
   background: #171b18;
   color: #d8e2d8;
   font-size: 13px;
+}
+
+.terminal-empty {
+  color: #879388;
 }
 
 .log-line {
@@ -552,6 +574,10 @@ td small {
   color: #f1b27a;
 }
 
+.log-line b.err {
+  color: #ff9c88;
+}
+
 .log-line code {
   overflow-wrap: anywhere;
 }
@@ -567,44 +593,65 @@ td small {
   color: #d8e2d8;
 }
 
-.terminal-input button {
-  padding: 0 12px;
-}
-
-.segmented {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 0;
-  padding: 12px 12px 0;
-}
-
-.segmented button {
-  border-radius: 0;
-}
-
-.segmented button:first-child {
-  border-radius: 6px 0 0 6px;
-}
-
-.segmented button:last-child {
-  border-radius: 0 6px 6px 0;
-}
-
-.segmented .active {
-  background: #dfe9dd;
-}
-
 .toggle {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 2px 12px;
+  min-height: 32px;
+  padding: 2px 0;
 }
 
 .danger {
-  margin: 4px 12px 12px;
   border-color: #d59a8d;
   color: #8a351d;
+}
+
+.connect-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.inline-error,
+.inline-success {
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.inline-error {
+  border: 1px solid #d7a08f;
+  background: #fff3ee;
+  color: #8a351d;
+}
+
+.inline-success {
+  border: 1px solid #acd2b6;
+  background: #eef8f0;
+  color: #236b45;
+}
+
+.selected-row {
+  background: #eef5ec;
+}
+
+.selected-row td {
+  border-bottom-color: #d6e2d3;
+}
+
+.log-export-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  padding: 12px;
+}
+
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px;
+  border-top: 1px solid #e2e5e1;
 }
 
 .quota {
@@ -614,6 +661,11 @@ td small {
 
 .quota small {
   grid-column: 2 / 4;
+}
+
+.quota-grid.flat {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 0;
 }
 
 @media (max-width: 920px) {
@@ -658,6 +710,7 @@ td small {
 
   .split-layout,
   .workflow,
+  .channels-layout,
   .terminal-layout {
     grid-template-columns: 1fr;
   }
@@ -679,5 +732,10 @@ td small {
   .row-actions button {
     display: block;
     margin: 4px 0 0;
+  }
+
+  .connect-row,
+  .quota-grid.flat {
+    grid-template-columns: 1fr;
   }
 }
