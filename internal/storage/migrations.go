@@ -84,6 +84,7 @@ func ensureSchema(ctx context.Context, db *sql.DB) error {
 		`ALTER TABLE channels ADD COLUMN dev_name TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE channels ADD COLUMN default_flow TEXT NOT NULL DEFAULT 'none'`,
 		`ALTER TABLE channels ADD COLUMN error_message TEXT NOT NULL DEFAULT ''`,
+		`DELETE FROM log_segments WHERE id NOT IN (SELECT MAX(id) FROM log_segments GROUP BY path)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS log_segments_path_unique ON log_segments(path)`,
 	} {
 		if _, err := db.ExecContext(ctx, statement); err != nil && !isDuplicateColumnError(err) {

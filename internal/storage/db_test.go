@@ -212,6 +212,82 @@ CREATE TABLE log_segments (
 	}
 }
 
+func TestDBOpenDeduplicatesLogSegmentsBeforeUniqueIndex(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "meta.db")
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open returned error: %v", err)
+	}
+	if _, err := legacy.Exec(`
+CREATE TABLE log_segments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  channel_id TEXT NOT NULL,
+  path TEXT NOT NULL,
+  start_time TEXT NOT NULL,
+  end_time TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  frame_count INTEGER NOT NULL,
+  status TEXT NOT NULL
+)`); err != nil {
+		t.Fatalf("legacy schema setup returned error: %v", err)
+	}
+	base := time.Unix(1700000000, 0).UTC()
+	if _, err := legacy.Exec(`
+INSERT INTO log_segments (
+  id, channel_id, path, start_time, end_time, size_bytes, frame_count, status
+) VALUES
+  (?, ?, ?, ?, ?, ?, ?, ?),
+  (?, ?, ?, ?, ?, ?, ?, ?)
+`,
+		1, "channel-1", "channel-1/segment.rlog", base.Format(time.RFC3339Nano), base.Format(time.RFC3339Nano), 12, 1, string(LogSegmentStatusActive),
+		2, "channel-1", "channel-1/segment.rlog", base.Format(time.RFC3339Nano), base.Add(time.Minute).Format(time.RFC3339Nano), 24, 2, string(LogSegmentStatusClosed),
+	); err != nil {
+		t.Fatalf("legacy data setup returned error: %v", err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("legacy Close returned error: %v", err)
+	}
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	var id int64
+	var sizeBytes int64
+	var frameCount int64
+	var status string
+	var count int
+	if err := db.sql.QueryRow(`
+SELECT COUNT(*), id, size_bytes, frame_count, status
+FROM log_segments
+WHERE path = ?
+`, "channel-1/segment.rlog").Scan(&count, &id, &sizeBytes, &frameCount, &status); err != nil {
+		t.Fatalf("deduplicated row query returned error: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("row count for path = %d, want 1", count)
+	}
+	if id != 2 || sizeBytes != 24 || frameCount != 2 || status != string(LogSegmentStatusClosed) {
+		t.Fatalf("deduplicated row = id %d size %d frames %d status %q, want id 2 size 24 frames 2 status %q",
+			id, sizeBytes, frameCount, status, LogSegmentStatusClosed)
+	}
+
+	duplicate := LogSegment{
+		ChannelID:  "channel-2",
+		Path:       "channel-1/segment.rlog",
+		StartTime:  base,
+		EndTime:    base,
+		SizeBytes:  36,
+		FrameCount: 3,
+		Status:     LogSegmentStatusActive,
+	}
+	if err := db.InsertLogSegment(duplicate); err == nil {
+		t.Fatal("InsertLogSegment returned nil error, want unique index to reject duplicate path")
+	}
+}
+
 func TestDBUpsertsLogSegmentByPath(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "meta.db"))
 	if err != nil {
