@@ -265,6 +265,94 @@ func TestExportRawFiltersFrameTimeRangeAndDirection(t *testing.T) {
 	}
 }
 
+func TestExportRawStopsAtSegmentSizeLimit(t *testing.T) {
+	dir := t.TempDir()
+	start := time.Unix(1700000000, 0).UTC()
+	segmentPath := writeTestSegment(t, dir, protocol.LogFrame{
+		ChannelID:   "channel-1",
+		Seq:         1,
+		TimestampNS: start.UnixNano(),
+		Direction:   protocol.DirectionRX,
+		Flags:       protocol.FlagRaw,
+		Payload:     []byte("complete\n"),
+	})
+	firstFrameBytes, err := os.ReadFile(segmentPath)
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+
+	incompletePayload, err := protocol.EncodeLogFrame(protocol.LogFrame{
+		ChannelID:   "channel-1",
+		Seq:         2,
+		TimestampNS: start.Add(time.Second).UnixNano(),
+		Direction:   protocol.DirectionRX,
+		Flags:       protocol.FlagRaw,
+		Payload:     []byte("incomplete\n"),
+	})
+	if err != nil {
+		t.Fatalf("EncodeLogFrame returned error: %v", err)
+	}
+	var lenBuf [4]byte
+	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(incompletePayload)))
+	file, err := os.OpenFile(segmentPath, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatalf("OpenFile returned error: %v", err)
+	}
+	if _, err := file.Write(lenBuf[:]); err != nil {
+		t.Fatalf("Write length returned error: %v", err)
+	}
+	if _, err := file.Write(incompletePayload[:len(incompletePayload)-1]); err != nil {
+		t.Fatalf("Write partial payload returned error: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+
+	var out bytes.Buffer
+	if err := ExportRawSegments([]SegmentSource{{
+		Path:     segmentPath,
+		MaxBytes: int64(len(firstFrameBytes)),
+	}}, ExportOptions{
+		IncludeRX: true,
+		IncludeTX: true,
+	}, &out); err != nil {
+		t.Fatalf("ExportRawSegments returned error: %v", err)
+	}
+	frames := decodeRawExport(t, out.Bytes())
+	if len(frames) != 1 {
+		t.Fatalf("exported %d frames, want 1", len(frames))
+	}
+	if frames[0].Seq != 1 || string(frames[0].Payload) != "complete\n" {
+		t.Fatalf("exported frame = %+v, want only complete first frame", frames[0])
+	}
+}
+
+func TestExportRawSkipsZeroSizeSegment(t *testing.T) {
+	dir := t.TempDir()
+	segmentPath := writeTestSegment(t, dir, protocol.LogFrame{
+		ChannelID:   "channel-1",
+		Seq:         1,
+		TimestampNS: time.Unix(1700000000, 0).UnixNano(),
+		Direction:   protocol.DirectionRX,
+		Flags:       protocol.FlagRaw,
+		Payload:     []byte("hidden\n"),
+	})
+
+	var out bytes.Buffer
+	if err := ExportRawSegments([]SegmentSource{{
+		Path:     segmentPath,
+		MaxBytes: 0,
+	}}, ExportOptions{
+		IncludeRX: true,
+		IncludeTX: true,
+	}, &out); err != nil {
+		t.Fatalf("ExportRawSegments returned error: %v", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("raw export length = %d, want 0", out.Len())
+	}
+}
+
 func TestExportTextStripsANSI(t *testing.T) {
 	dir := t.TempDir()
 	segmentPath := writeTestSegment(t, dir, protocol.LogFrame{

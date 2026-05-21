@@ -250,6 +250,72 @@ func TestLogDownloadRawFiltersFramesByTimeRange(t *testing.T) {
 	}
 }
 
+func TestLogDownloadUsesSegmentSizeSnapshot(t *testing.T) {
+	root := t.TempDir()
+	db, logDir := openLogDownloadDB(t, root)
+	start := time.Date(2026, 5, 19, 0, 0, 0, 0, time.UTC)
+	first := protocol.LogFrame{
+		ChannelID:   "channel-1",
+		Seq:         1,
+		TimestampNS: start.UnixNano(),
+		Direction:   protocol.DirectionRX,
+		Flags:       protocol.FlagRaw,
+		Payload:     []byte("complete\n"),
+	}
+	segment := insertLogSegment(t, db, logDir, "channel-1", first)
+	segmentPath := filepath.Join(logDir, segment.RelativePath)
+
+	incompletePayload, err := protocol.EncodeLogFrame(protocol.LogFrame{
+		ChannelID:   "channel-1",
+		Seq:         2,
+		TimestampNS: start.Add(time.Second).UnixNano(),
+		Direction:   protocol.DirectionRX,
+		Flags:       protocol.FlagRaw,
+		Payload:     []byte("incomplete\n"),
+	})
+	if err != nil {
+		t.Fatalf("EncodeLogFrame returned error: %v", err)
+	}
+	var lenBuf [4]byte
+	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(incompletePayload)))
+	file, err := os.OpenFile(segmentPath, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatalf("OpenFile returned error: %v", err)
+	}
+	if _, err := file.Write(lenBuf[:]); err != nil {
+		t.Fatalf("Write length returned error: %v", err)
+	}
+	if _, err := file.Write(incompletePayload[:len(incompletePayload)-1]); err != nil {
+		t.Fatalf("Write partial payload returned error: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+
+	srv := server.New(server.ServerConfig{DB: db, LogDir: logDir})
+	query := url.Values{
+		"channel_id": {"channel-1"},
+		"from":       {start.Add(-time.Second).Format(time.RFC3339Nano)},
+		"to":         {start.Add(time.Minute).Format(time.RFC3339Nano)},
+		"format":     {"raw"},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/logs/download?"+query.Encode(), nil)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	frames := decodeRawDownload(t, rec.Body.Bytes())
+	if len(frames) != 1 {
+		t.Fatalf("downloaded %d frames, want 1", len(frames))
+	}
+	if frames[0].Seq != first.Seq || string(frames[0].Payload) != string(first.Payload) {
+		t.Fatalf("downloaded frame = %+v, want only complete first frame", frames[0])
+	}
+}
+
 func TestLogDownloadRejectsInvalidQuery(t *testing.T) {
 	root := t.TempDir()
 	db, logDir := openLogDownloadDB(t, root)

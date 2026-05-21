@@ -146,6 +146,13 @@ func TestLogWebSocketRegistersActiveSegmentBeforeClose(t *testing.T) {
 	if len(body) == 0 {
 		t.Fatal("raw download is empty, want active segment bytes")
 	}
+	frames := decodeRawDownload(t, body)
+	if len(frames) != 1 {
+		t.Fatalf("downloaded %d frames, want 1", len(frames))
+	}
+	if frames[0].Seq != 1 || string(frames[0].Payload) != "active boot\n" {
+		t.Fatalf("downloaded frame = %+v, want active boot payload", frames[0])
+	}
 }
 
 func TestLogWebSocketRejectsInvalidChannelIDWithoutSegment(t *testing.T) {

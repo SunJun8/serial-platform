@@ -23,12 +23,21 @@ type ExportOptions struct {
 	To               time.Time
 }
 
+type SegmentSource struct {
+	Path     string
+	MaxBytes int64
+}
+
 var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
 
 func ExportText(paths []string, opts ExportOptions, out io.Writer) error {
+	return ExportTextSegments(segmentSourcesFromPaths(paths), opts, out)
+}
+
+func ExportTextSegments(sources []SegmentSource, opts ExportOptions, out io.Writer) error {
 	writer := bufio.NewWriter(out)
 
-	if err := exportFrames(paths, opts, func(_ []byte, frame protocol.LogFrame) error {
+	if err := exportFrames(sources, opts, func(_ []byte, frame protocol.LogFrame) error {
 		return writeTextFrame(writer, frame, opts)
 	}); err != nil {
 		return err
@@ -37,7 +46,11 @@ func ExportText(paths []string, opts ExportOptions, out io.Writer) error {
 }
 
 func ExportRaw(paths []string, opts ExportOptions, out io.Writer) error {
-	return exportFrames(paths, opts, func(payload []byte, _ protocol.LogFrame) error {
+	return ExportRawSegments(segmentSourcesFromPaths(paths), opts, out)
+}
+
+func ExportRawSegments(sources []SegmentSource, opts ExportOptions, out io.Writer) error {
+	return exportFrames(sources, opts, func(payload []byte, _ protocol.LogFrame) error {
 		var lenBuf [4]byte
 		binary.BigEndian.PutUint32(lenBuf[:], uint32(len(payload)))
 		if _, err := out.Write(lenBuf[:]); err != nil {
@@ -48,25 +61,41 @@ func ExportRaw(paths []string, opts ExportOptions, out io.Writer) error {
 	})
 }
 
-func exportFrames(paths []string, opts ExportOptions, handle func([]byte, protocol.LogFrame) error) error {
+func segmentSourcesFromPaths(paths []string) []SegmentSource {
+	sources := make([]SegmentSource, 0, len(paths))
 	for _, path := range paths {
-		if err := exportFramesFile(path, opts, handle); err != nil {
+		sources = append(sources, SegmentSource{Path: path, MaxBytes: -1})
+	}
+	return sources
+}
+
+func exportFrames(sources []SegmentSource, opts ExportOptions, handle func([]byte, protocol.LogFrame) error) error {
+	for _, source := range sources {
+		if err := exportFramesFile(source, opts, handle); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func exportFramesFile(path string, opts ExportOptions, handle func([]byte, protocol.LogFrame) error) error {
-	file, err := os.Open(path)
+func exportFramesFile(source SegmentSource, opts ExportOptions, handle func([]byte, protocol.LogFrame) error) error {
+	if source.MaxBytes == 0 {
+		return nil
+	}
+
+	file, err := os.Open(source.Path)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 
+	var reader io.Reader = file
+	if source.MaxBytes > 0 {
+		reader = io.LimitReader(file, source.MaxBytes)
+	}
 	for {
 		var lenBuf [4]byte
-		_, err := io.ReadFull(file, lenBuf[:])
+		_, err := io.ReadFull(reader, lenBuf[:])
 		if err == io.EOF {
 			return nil
 		}
@@ -75,7 +104,7 @@ func exportFramesFile(path string, opts ExportOptions, handle func([]byte, proto
 		}
 
 		payload := make([]byte, binary.BigEndian.Uint32(lenBuf[:]))
-		if _, err := io.ReadFull(file, payload); err != nil {
+		if _, err := io.ReadFull(reader, payload); err != nil {
 			return err
 		}
 		frame, err := protocol.DecodeLogFrame(payload)

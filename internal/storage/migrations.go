@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS candidates (
 CREATE TABLE IF NOT EXISTS log_segments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   channel_id TEXT NOT NULL,
-  path TEXT NOT NULL,
+  path TEXT NOT NULL UNIQUE,
   start_time TEXT NOT NULL,
   end_time TEXT NOT NULL,
   size_bytes INTEGER NOT NULL,
@@ -84,6 +84,7 @@ func ensureSchema(ctx context.Context, db *sql.DB) error {
 		`ALTER TABLE channels ADD COLUMN dev_name TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE channels ADD COLUMN default_flow TEXT NOT NULL DEFAULT 'none'`,
 		`ALTER TABLE channels ADD COLUMN error_message TEXT NOT NULL DEFAULT ''`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS log_segments_path_unique ON log_segments(path)`,
 	} {
 		if _, err := db.ExecContext(ctx, statement); err != nil && !isDuplicateColumnError(err) {
 			return err

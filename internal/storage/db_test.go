@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -134,6 +135,139 @@ func TestDBListsOverlappingLogSegments(t *testing.T) {
 	}
 	if got[0].Status != LogSegmentStatusActive {
 		t.Fatalf("Status = %q, want %q", got[0].Status, LogSegmentStatusActive)
+	}
+}
+
+func TestDBRejectsDuplicateLogSegmentPath(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "meta.db"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	now := time.Unix(1700000000, 0).UTC()
+	segment := LogSegment{
+		ChannelID:  "channel-1",
+		Path:       "channel-1/segment.rlog",
+		StartTime:  now,
+		EndTime:    now,
+		SizeBytes:  12,
+		FrameCount: 1,
+		Status:     LogSegmentStatusActive,
+	}
+	if err := db.InsertLogSegment(segment); err != nil {
+		t.Fatalf("first InsertLogSegment returned error: %v", err)
+	}
+	segment.ChannelID = "channel-2"
+	if err := db.InsertLogSegment(segment); err == nil {
+		t.Fatal("second InsertLogSegment returned nil error, want duplicate path rejected")
+	}
+}
+
+func TestDBOpenAddsUniqueLogSegmentPathIndexToExistingDB(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "meta.db")
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open returned error: %v", err)
+	}
+	if _, err := legacy.Exec(`
+CREATE TABLE log_segments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  channel_id TEXT NOT NULL,
+  path TEXT NOT NULL,
+  start_time TEXT NOT NULL,
+  end_time TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  frame_count INTEGER NOT NULL,
+  status TEXT NOT NULL
+)`); err != nil {
+		t.Fatalf("legacy schema setup returned error: %v", err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("legacy Close returned error: %v", err)
+	}
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	now := time.Unix(1700000000, 0).UTC()
+	segment := LogSegment{
+		ChannelID:  "channel-1",
+		Path:       "channel-1/segment.rlog",
+		StartTime:  now,
+		EndTime:    now,
+		SizeBytes:  12,
+		FrameCount: 1,
+		Status:     LogSegmentStatusActive,
+	}
+	if err := db.InsertLogSegment(segment); err != nil {
+		t.Fatalf("first InsertLogSegment returned error: %v", err)
+	}
+	segment.SizeBytes = 24
+	if err := db.InsertLogSegment(segment); err == nil {
+		t.Fatal("second InsertLogSegment returned nil error, want unique index to reject duplicate path")
+	}
+}
+
+func TestDBUpsertsLogSegmentByPath(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "meta.db"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	start := time.Unix(1700000000, 0).UTC()
+	active := LogSegment{
+		ChannelID:  "channel-1",
+		Path:       "channel-1/segment.rlog",
+		StartTime:  start,
+		EndTime:    start,
+		SizeBytes:  12,
+		FrameCount: 1,
+		Status:     LogSegmentStatusActive,
+	}
+	if err := db.UpsertLogSegment(active); err != nil {
+		t.Fatalf("active UpsertLogSegment returned error: %v", err)
+	}
+	before, err := db.ListLogSegments("channel-1", start.Add(-time.Second), start.Add(time.Second))
+	if err != nil {
+		t.Fatalf("ListLogSegments before close returned error: %v", err)
+	}
+	if len(before) != 1 {
+		t.Fatalf("len(before) = %d, want 1", len(before))
+	}
+
+	closed := active
+	closed.EndTime = start.Add(time.Second)
+	closed.SizeBytes = 36
+	closed.FrameCount = 3
+	closed.Status = LogSegmentStatusClosed
+	if err := db.UpsertLogSegment(closed); err != nil {
+		t.Fatalf("closed UpsertLogSegment returned error: %v", err)
+	}
+
+	after, err := db.ListLogSegments("channel-1", start.Add(-time.Second), start.Add(2*time.Second))
+	if err != nil {
+		t.Fatalf("ListLogSegments after close returned error: %v", err)
+	}
+	if len(after) != 1 {
+		t.Fatalf("len(after) = %d, want 1", len(after))
+	}
+	if after[0].ID != before[0].ID {
+		t.Fatalf("ID = %d, want same row ID %d", after[0].ID, before[0].ID)
+	}
+	if after[0].Status != LogSegmentStatusClosed || after[0].SizeBytes != 36 || after[0].FrameCount != 3 {
+		t.Fatalf("segment after close = %+v, want closed size 36 frame_count 3", after[0])
+	}
+	var count int
+	if err := db.sql.QueryRow(`SELECT COUNT(*) FROM log_segments WHERE path = ?`, active.Path).Scan(&count); err != nil {
+		t.Fatalf("COUNT query returned error: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("row count for path = %d, want 1", count)
 	}
 }
 

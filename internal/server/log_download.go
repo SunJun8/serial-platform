@@ -72,7 +72,7 @@ func (srv *Server) handleLogDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	paths, err := srv.logSegmentPaths(segments)
+	sources, err := srv.logSegmentSources(segments)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -80,7 +80,7 @@ func (srv *Server) handleLogDownload(w http.ResponseWriter, r *http.Request) {
 
 	if format == "raw" {
 		var out bytes.Buffer
-		if err := logstore.ExportRaw(paths, logstore.ExportOptions{
+		if err := logstore.ExportRawSegments(sources, logstore.ExportOptions{
 			IncludeRX: includeRX,
 			IncludeTX: includeTX,
 			From:      from,
@@ -96,7 +96,7 @@ func (srv *Server) handleLogDownload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var out bytes.Buffer
-	if err := logstore.ExportText(paths, logstore.ExportOptions{
+	if err := logstore.ExportTextSegments(sources, logstore.ExportOptions{
 		IncludeRX:        includeRX,
 		IncludeTX:        includeTX,
 		IncludeTimestamp: includeTimestamp,
@@ -148,16 +148,19 @@ func parseLogDownloadBool(value string, name string) (bool, error) {
 	return parsed, nil
 }
 
-func (srv *Server) logSegmentPaths(segments []storage.LogSegment) ([]string, error) {
-	paths := make([]string, 0, len(segments))
+func (srv *Server) logSegmentSources(segments []storage.LogSegment) ([]logstore.SegmentSource, error) {
+	sources := make([]logstore.SegmentSource, 0, len(segments))
 	for _, segment := range segments {
 		path, err := srv.logSegmentPath(segment.Path)
 		if err != nil {
 			return nil, err
 		}
-		paths = append(paths, path)
+		sources = append(sources, logstore.SegmentSource{
+			Path:     path,
+			MaxBytes: segment.SizeBytes,
+		})
 	}
-	return paths, nil
+	return sources, nil
 }
 
 func (srv *Server) logSegmentPath(segmentPath string) (string, error) {
