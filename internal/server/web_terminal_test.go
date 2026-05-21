@@ -180,6 +180,36 @@ func TestTerminalWebSocketRejectsAgentOpenFailureAndReleasesOwner(t *testing.T) 
 	}
 }
 
+func TestTerminalWebSocketOpenContextCancelSendsClose(t *testing.T) {
+	db := newTerminalTestDB(t)
+	if err := db.UpsertChannel(terminalTestChannel("channel-1", "agent-1")); err != nil {
+		t.Fatalf("UpsertChannel returned error: %v", err)
+	}
+	srv := server.New(server.ServerConfig{DB: db})
+	httpSrv := httptest.NewServer(srv)
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	agentConn := connectTerminalTestAgent(t, ctx, httpSrv.URL, "agent-1")
+	defer agentConn.Close(websocket.StatusNormalClosure, "")
+
+	conn := dialTerminalWebSocket(t, ctx, httpSrv.URL, "channel-1")
+	open := readTerminalAgentMessage(t, ctx, agentConn)
+	if open.Type != protocol.MessageTerminalOpen || open.SessionID == "" {
+		t.Fatalf("terminal open = %+v, want open with session", open)
+	}
+	conn.CloseNow()
+
+	closeMsg := readTerminalAgentMessage(t, ctx, agentConn)
+	if closeMsg.Type != protocol.MessageTerminalClose ||
+		closeMsg.SessionID != open.SessionID ||
+		closeMsg.ChannelID != "channel-1" {
+		t.Fatalf("terminal close = %+v, want close for in-flight open session %s", closeMsg, open.SessionID)
+	}
+}
+
 type terminalAgentMessage struct {
 	Type      protocol.MessageType `json:"type"`
 	RequestID string               `json:"request_id"`
@@ -333,6 +363,55 @@ func TestTerminalWebSocketDisconnectReleasesOwnerWhenAgentCloseCannotComplete(t 
 	secondOpen := readTerminalAgentMessage(t, ctx, reconnectedAgent)
 	if secondOpen.Type != protocol.MessageTerminalOpen || secondOpen.SessionID == open.SessionID {
 		t.Fatalf("second terminal open = %+v, want owner released without waiting for close send", secondOpen)
+	}
+}
+
+func TestTerminalWebSocketAgentDisconnectFailsPendingWriteAndReleasesOwner(t *testing.T) {
+	db := newTerminalTestDB(t)
+	if err := db.UpsertChannel(terminalTestChannel("channel-1", "agent-1")); err != nil {
+		t.Fatalf("UpsertChannel returned error: %v", err)
+	}
+	srv := server.New(server.ServerConfig{DB: db})
+	httpSrv := httptest.NewServer(srv)
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	agentConn := connectTerminalTestAgent(t, ctx, httpSrv.URL, "agent-1")
+	conn := dialTerminalWebSocket(t, ctx, httpSrv.URL, "channel-1")
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	open := readTerminalAgentMessage(t, ctx, agentConn)
+	writeTerminalAgentResult(t, ctx, agentConn, open.RequestID, true, "")
+
+	writeTerminalCommand(t, ctx, conn, "browser-write", []byte("AT\r"))
+	write := readTerminalAgentMessage(t, ctx, agentConn)
+	if write.Type != protocol.MessageTerminalWrite {
+		t.Fatalf("terminal write = %+v, want terminal_write", write)
+	}
+	if err := agentConn.Close(websocket.StatusNormalClosure, ""); err != nil {
+		t.Fatalf("agentConn.Close returned error: %v", err)
+	}
+
+	var result protocol.OperationResult
+	if err := protocol.ReadJSON(ctx, conn, &result); err != nil {
+		t.Fatalf("protocol.ReadJSON returned error: %v", err)
+	}
+	if result.Type != protocol.MessageOperationResult ||
+		result.RequestID != "browser-write" ||
+		result.OK ||
+		result.Error == "" {
+		t.Fatalf("browser result = %+v, want pending write failure after agent disconnect", result)
+	}
+
+	reconnectedAgent := connectTerminalTestAgent(t, ctx, httpSrv.URL, "agent-1")
+	defer reconnectedAgent.Close(websocket.StatusNormalClosure, "")
+	second := dialTerminalWebSocket(t, ctx, httpSrv.URL, "channel-1")
+	defer second.Close(websocket.StatusNormalClosure, "")
+	secondOpen := readTerminalAgentMessage(t, ctx, reconnectedAgent)
+	if secondOpen.Type != protocol.MessageTerminalOpen || secondOpen.SessionID == open.SessionID {
+		t.Fatalf("second terminal open = %+v, want owner released after pending write failed", secondOpen)
 	}
 }
 

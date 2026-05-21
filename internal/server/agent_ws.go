@@ -65,7 +65,10 @@ func (srv *Server) handleAgentWebSocket(w http.ResponseWriter, r *http.Request) 
 
 	agentConn := newAgentConnection(hello.AgentID, conn, now)
 	srv.agentRegistry.upsert(agentConn)
-	defer srv.agentRegistry.remove(hello.AgentID, conn)
+	defer func() {
+		srv.agentRegistry.remove(hello.AgentID, conn)
+		srv.terminalOps.failAgent(hello.AgentID, errAgentNotConnected)
+	}()
 
 	accepted := protocol.AgentAccepted{
 		Type:   protocol.MessageAgentAccepted,
@@ -194,7 +197,7 @@ func (srv *Server) readAgentControlMessages(ctx context.Context, agentID string,
 				log.Printf("decode operation result from %s: %v", agentID, err)
 				continue
 			}
-			if srv.terminalOps.complete(result) {
+			if srv.terminalOps.complete(agentID, result) {
 				continue
 			}
 			if !result.OK {
