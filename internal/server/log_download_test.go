@@ -153,6 +153,30 @@ func TestLogDownloadTextFiltersFramesByTimeRange(t *testing.T) {
 	}
 }
 
+func TestLogDownloadTextPreservesPayloadNewlinesAcrossFrames(t *testing.T) {
+	root := t.TempDir()
+	db, logDir := openLogDownloadDB(t, root)
+	start := time.Date(2026, 5, 19, 0, 0, 0, 0, time.UTC)
+	insertLogSegment(t, db, logDir, "channel-1",
+		protocol.LogFrame{ChannelID: "channel-1", Seq: 1, TimestampNS: start.UnixNano(), Direction: protocol.DirectionRX, Flags: protocol.FlagRaw, Payload: []byte("hello ")},
+		protocol.LogFrame{ChannelID: "channel-1", Seq: 2, TimestampNS: start.Add(time.Second).UnixNano(), Direction: protocol.DirectionRX, Flags: protocol.FlagRaw, Payload: []byte("world\nnext")},
+	)
+
+	srv := server.New(server.ServerConfig{DB: db, LogDir: logDir})
+	req := httptest.NewRequest(http.MethodGet, "/api/logs/download?channel_id=channel-1&direction=rx", nil)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	want := "hello world\nnext"
+	if rec.Body.String() != want {
+		t.Fatalf("body = %q, want %q", rec.Body.String(), want)
+	}
+}
+
 func TestLogDownloadRawConcatenatesSegments(t *testing.T) {
 	root := t.TempDir()
 	db, logDir := openLogDownloadDB(t, root)

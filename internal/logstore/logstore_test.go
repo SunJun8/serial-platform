@@ -273,6 +273,49 @@ func TestExportTextFiltersFrameTimeRange(t *testing.T) {
 	}
 }
 
+func TestExportTextPreservesPayloadNewlinesAcrossFrames(t *testing.T) {
+	dir := t.TempDir()
+	start := time.Unix(1700000000, 0).UTC()
+	segmentPath := writeTestSegment(t, dir,
+		protocol.LogFrame{ChannelID: "channel-1", Seq: 1, TimestampNS: start.UnixNano(), Direction: protocol.DirectionRX, Flags: protocol.FlagRaw, Payload: []byte("hello ")},
+		protocol.LogFrame{ChannelID: "channel-1", Seq: 2, TimestampNS: start.Add(time.Second).UnixNano(), Direction: protocol.DirectionRX, Flags: protocol.FlagRaw, Payload: []byte("world\nnext")},
+		protocol.LogFrame{ChannelID: "channel-1", Seq: 3, TimestampNS: start.Add(2 * time.Second).UnixNano(), Direction: protocol.DirectionRX, Flags: protocol.FlagRaw, Payload: []byte(" line\r\nlast")},
+	)
+
+	var out bytes.Buffer
+	if err := ExportText([]string{segmentPath}, ExportOptions{IncludeRX: true, IncludeTX: true}, &out); err != nil {
+		t.Fatalf("ExportText returned error: %v", err)
+	}
+	want := "hello world\nnext line\r\nlast"
+	if out.String() != want {
+		t.Fatalf("export text = %q, want %q", out.String(), want)
+	}
+}
+
+func TestExportTextPrefixesOnlyAtFrameStart(t *testing.T) {
+	dir := t.TempDir()
+	start := time.Unix(1700000000, 0).UTC()
+	segmentPath := writeTestSegment(t, dir,
+		protocol.LogFrame{ChannelID: "channel-1", Seq: 1, TimestampNS: start.UnixNano(), Direction: protocol.DirectionRX, Flags: protocol.FlagRaw, Payload: []byte("hello")},
+		protocol.LogFrame{ChannelID: "channel-1", Seq: 2, TimestampNS: start.Add(time.Second).UnixNano(), Direction: protocol.DirectionTX, Flags: protocol.FlagRaw, Payload: []byte("tx\nline2")},
+	)
+
+	var out bytes.Buffer
+	if err := ExportText([]string{segmentPath}, ExportOptions{
+		IncludeRX:        true,
+		IncludeTX:        true,
+		IncludeTimestamp: true,
+		IncludeDirection: true,
+	}, &out); err != nil {
+		t.Fatalf("ExportText returned error: %v", err)
+	}
+	want := start.Format(time.RFC3339Nano) + " RX hello" +
+		start.Add(time.Second).Format(time.RFC3339Nano) + " TX tx\nline2"
+	if out.String() != want {
+		t.Fatalf("export text = %q, want %q", out.String(), want)
+	}
+}
+
 func TestExportRawFiltersFrameTimeRangeAndDirection(t *testing.T) {
 	dir := t.TempDir()
 	start := time.Unix(1700000000, 0).UTC()

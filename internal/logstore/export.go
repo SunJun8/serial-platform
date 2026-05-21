@@ -145,6 +145,18 @@ func includeFrame(frame protocol.LogFrame, opts ExportOptions) bool {
 }
 
 func writeTextFrame(out *bufio.Writer, frame protocol.LogFrame, opts ExportOptions) error {
+	if err := writeTextFramePrefix(out, frame, opts); err != nil {
+		return err
+	}
+	text := escapedUTF8(frame.Payload)
+	if opts.StripANSI {
+		text = ansiRE.ReplaceAllString(text, "")
+	}
+	_, err := fmt.Fprint(out, text)
+	return err
+}
+
+func writeTextFramePrefix(out *bufio.Writer, frame protocol.LogFrame, opts ExportOptions) error {
 	if opts.IncludeTimestamp {
 		if _, err := fmt.Fprintf(out, "%s ", time.Unix(0, frame.TimestampNS).UTC().Format(time.RFC3339Nano)); err != nil {
 			return err
@@ -159,13 +171,7 @@ func writeTextFrame(out *bufio.Writer, frame protocol.LogFrame, opts ExportOptio
 			return err
 		}
 	}
-
-	text := escapedUTF8(frame.Payload)
-	if opts.StripANSI {
-		text = ansiRE.ReplaceAllString(text, "")
-	}
-	_, err := fmt.Fprint(out, text)
-	return err
+	return nil
 }
 
 func escapedUTF8(data []byte) string {
