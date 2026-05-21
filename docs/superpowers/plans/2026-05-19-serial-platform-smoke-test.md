@@ -117,7 +117,9 @@ tar -tzf serial-platform-linux.tar.gz | sort
 ./serialctl-linux-amd64
 ```
 
-不要在开发机直接运行安装脚本，除非明确要写入 `/usr/local/bin` 和 systemd。
+不要在开发机直接运行安装脚本，除非明确要写入 `/usr/local/bin`、创建/更新 systemd unit，并可能修改目标用户的 `dialout` 组成员关系。
+
+host-agent 安装后作为非 root systemd service 运行。可用 `--user USER` 指定运行用户；未指定时默认使用 `SUDO_USER`，否则使用当前用户。如果系统存在 `dialout` 组，安装脚本会把运行用户加入该组，并在 service 中声明 `SupplementaryGroups=dialout`。如果这是第一次加入 `dialout`，需要重新登录，或在组成员关系生效后重启 service。安装脚本不负责生成或刷新 udev rules，channel 级 udev rules 仍由 host-agent 运行时处理。
 
 ## 9. 清理
 

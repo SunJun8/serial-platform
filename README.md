@@ -126,7 +126,9 @@ sudo ./install-central.sh --data-dir /data/serial-platform --listen :8080 --rfc2
 在 host-agent 机器：
 
 ```bash
-sudo ./install-agent.sh --server http://central-server:8080 --data-dir /var/lib/serial-agent
+sudo ./install-agent.sh --server http://central-server:8080 --data-dir /var/lib/serial-agent --user "$USER"
 ```
 
-安装脚本会写 systemd unit 并执行 `systemctl daemon-reload` 和 `systemctl enable --now ...`。agent 安装脚本只检查 `udevadm` 可用，不生成、不刷新 udev rules。
+安装脚本会写 systemd unit 并执行 `systemctl daemon-reload` 和 `systemctl enable --now ...`。host-agent service 使用非 root 用户运行；未指定 `--user` 时默认使用 `SUDO_USER`，否则使用当前用户。agent 安装脚本会在系统存在 `dialout` 组时执行 `usermod -aG dialout <user>` 并在 service 中声明该补充组。如果这是第一次加入 `dialout`，需要重新登录，或在组成员关系生效后重启 service。
+
+不要在开发机随意运行安装脚本，除非明确要写入 `/usr/local/bin`、创建/更新 systemd unit，并可能修改目标用户的 `dialout` 组成员关系。agent 安装脚本只检查 `udevadm` 可用，不生成、不刷新 udev rules。
