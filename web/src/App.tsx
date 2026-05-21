@@ -1,12 +1,10 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import {
-  Activity,
   Cable,
   Download,
   Gauge,
   HardDrive,
-  ListFilter,
   Monitor,
   Plug,
   PlugZap,
@@ -15,23 +13,32 @@ import {
   Router,
   Search,
   Send,
-  Settings2,
   TerminalSquare,
   Unplug
 } from 'lucide-react';
 import { downloadURL, getJSON, postJSON, wsURL } from './api';
+import { Badge } from './components/Badge';
+import { EmptyRow } from './components/EmptyRow';
+import { FormFeedback } from './components/FormFeedback';
+import { Metric } from './components/Metric';
+import { Quota } from './components/Quota';
+import { ViewTitle } from './components/ViewTitle';
+import { languages, type MessageKey } from './i18n';
+import { useI18n } from './i18n-context';
 import type {
   Agent,
   Candidate,
   Channel,
   ChannelPayload,
+  Language,
   LiveLogFrame,
   OperationResult,
-  TerminalMessage
+  RefreshState,
+  RequestState,
+  TerminalMessage,
+  ViewKey
 } from './types';
 
-type ViewKey = 'hosts' | 'channels' | 'calibration' | 'terminal' | 'logs';
-type RequestState = { busy: boolean; error: string | null; message: string | null };
 type TerminalStatus = 'idle' | 'connecting' | 'connected' | 'error';
 type LogLine = {
   id: string;
@@ -42,16 +49,16 @@ type LogLine = {
 
 type NavItem = {
   key: ViewKey;
-  label: string;
+  labelKey: MessageKey;
   icon: LucideIcon;
 };
 
 const navItems: NavItem[] = [
-  { key: 'hosts', label: 'Hosts', icon: Monitor },
-  { key: 'channels', label: 'Channels', icon: Cable },
-  { key: 'calibration', label: 'Calibration', icon: Gauge },
-  { key: 'terminal', label: 'Live Log / Terminal', icon: TerminalSquare },
-  { key: 'logs', label: 'Logs', icon: HardDrive }
+  { key: 'agents', labelKey: 'navAgents', icon: Monitor },
+  { key: 'devices', labelKey: 'navDevices', icon: PlugZap },
+  { key: 'channels', labelKey: 'navChannels', icon: Cable },
+  { key: 'terminal', labelKey: 'navTerminal', icon: TerminalSquare },
+  { key: 'logs', labelKey: 'navLogs', icon: HardDrive }
 ];
 
 const emptyRequest: RequestState = { busy: false, error: null, message: null };
@@ -79,16 +86,20 @@ function defaultConfirmForm(candidate: Candidate | undefined, channels: Channel[
 }
 
 export function App() {
-  const [activeView, setActiveView] = useState<ViewKey>('hosts');
+  const { language, setLanguage, t } = useI18n();
+  const [activeView, setActiveView] = useState<ViewKey>('agents');
   const [agents, setAgents] = useState<Agent[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyAgentID, setBusyAgentID] = useState<string | null>(null);
   const [query, setQuery] = useState('');
+  const [refreshState, setRefreshState] = useState<RefreshState>('idle');
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
+    setRefreshState('loading');
     setError(null);
     try {
       const [nextAgents, nextChannels] = await Promise.all([
@@ -97,8 +108,11 @@ export function App() {
       ]);
       setAgents(nextAgents);
       setChannels(nextChannels);
+      setLastUpdatedAt(new Date());
+      setRefreshState('success');
     } catch (err) {
       setError(errorMessage(err));
+      setRefreshState('error');
     } finally {
       setLoading(false);
     }
@@ -107,6 +121,14 @@ export function App() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    if (refreshState !== 'success') {
+      return undefined;
+    }
+    const timeoutID = window.setTimeout(() => setRefreshState('idle'), 1800);
+    return () => window.clearTimeout(timeoutID);
+  }, [refreshState]);
 
   async function approveAgent(agentID: string) {
     setBusyAgentID(agentID);
@@ -160,8 +182,26 @@ export function App() {
     () => agents.reduce((count, agent) => count + (agent.Status === 'pending' ? 1 : 0), 0),
     [agents]
   );
-  const apiStatus = error ? 'API unavailable' : loading ? 'Loading API' : 'API connected';
+  const apiStatus = error ? t('apiUnavailable') : loading ? t('loadingAPI') : t('apiConnected');
   const apiStatusClass = error ? 'status-dot error' : loading ? 'status-dot' : 'status-dot online';
+  const refreshStatusText =
+    refreshState === 'loading'
+      ? t('refreshing')
+      : refreshState === 'success'
+        ? t('updatedJustNow')
+        : refreshState === 'error'
+          ? t('apiUnavailable')
+          : lastUpdatedAt
+            ? t('updatedJustNow')
+            : '';
+  const refreshTitle =
+    refreshState === 'loading'
+      ? t('refreshing')
+      : refreshState === 'success'
+        ? t('updatedJustNow')
+        : refreshState === 'error'
+          ? t('apiUnavailable')
+          : t('refresh');
 
   return (
     <div className="shell">
@@ -169,8 +209,8 @@ export function App() {
         <div className="brand">
           <Router size={20} aria-hidden="true" />
           <div>
-            <strong>Serial Platform</strong>
-            <span>central-server</span>
+            <strong>{t('appName')}</strong>
+            <span>{t('centralServer')}</span>
           </div>
         </div>
         <nav className="nav-list">
@@ -184,7 +224,7 @@ export function App() {
                 onClick={() => setActiveView(item.key)}
               >
                 <Icon size={17} aria-hidden="true" />
-                <span>{item.label}</span>
+                <span>{t(item.labelKey)}</span>
               </button>
             );
           })}
@@ -198,10 +238,10 @@ export function App() {
       <main className="workspace">
         <header className="topbar">
           <div className="metrics" aria-label="Platform summary">
-            <Metric label="Hosts" value={agents.length} tone="neutral" />
-            <Metric label="Pending" value={pendingAgents} tone={pendingAgents > 0 ? 'warn' : 'neutral'} />
-            <Metric label="Online channels" value={channelStats.online} tone="good" />
-            <Metric label="Busy" value={channelStats.busy} tone={channelStats.busy > 0 ? 'warn' : 'neutral'} />
+            <Metric label={t('metricAgents')} value={agents.length} tone="neutral" />
+            <Metric label={t('metricPending')} value={pendingAgents} tone={pendingAgents > 0 ? 'warn' : 'neutral'} />
+            <Metric label={t('metricOnlineChannels')} value={channelStats.online} tone="good" />
+            <Metric label={t('metricBusy')} value={channelStats.busy} tone={channelStats.busy > 0 ? 'warn' : 'neutral'} />
           </div>
           <div className="toolbar">
             <label className="search-box">
@@ -209,18 +249,39 @@ export function App() {
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Filter channels"
+                placeholder={t('filterChannels')}
               />
             </label>
-            <button type="button" className="icon-button" onClick={() => void refresh()} title="Refresh">
+            <label className="language-select">
+              <span>{t('language')}</span>
+              <select value={language} onChange={(event) => setLanguage(event.target.value as Language)}>
+                {languages.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <span className="refresh-status">{refreshStatusText}</span>
+            <button
+              type="button"
+              className={refreshState === 'loading' ? 'icon-button spinning' : 'icon-button'}
+              onClick={() => void refresh()}
+              title={refreshTitle}
+              disabled={refreshState === 'loading'}
+            >
               <RefreshCw size={16} aria-hidden="true" />
             </button>
           </div>
         </header>
 
-        {error ? <div className="error-strip">API error: {error}</div> : null}
+        {error ? (
+          <div className="error-strip">
+            {t('apiError')}: {error}
+          </div>
+        ) : null}
 
-        {activeView === 'hosts' ? (
+        {activeView === 'agents' ? (
           <HostsView
             agents={agents}
             channels={channels}
@@ -228,6 +289,9 @@ export function App() {
             busyAgentID={busyAgentID}
             onApproveAgent={(agentID) => void approveAgent(agentID)}
           />
+        ) : null}
+        {activeView === 'devices' ? (
+          <CalibrationView agents={agents} channels={channels} onRefresh={refresh} />
         ) : null}
         {activeView === 'channels' ? (
           <ChannelsView
@@ -239,21 +303,9 @@ export function App() {
             onRefresh={refresh}
           />
         ) : null}
-        {activeView === 'calibration' ? (
-          <CalibrationView agents={agents} channels={channels} onRefresh={refresh} />
-        ) : null}
         {activeView === 'terminal' ? <TerminalView channels={channels} /> : null}
         {activeView === 'logs' ? <LogsView channels={channels} /> : null}
       </main>
-    </div>
-  );
-}
-
-function Metric({ label, value, tone }: { label: string; value: number; tone: 'neutral' | 'good' | 'warn' }) {
-  return (
-    <div className={`metric ${tone}`}>
-      <span>{label}</span>
-      <strong>{value}</strong>
     </div>
   );
 }
@@ -1192,66 +1244,6 @@ function LogsView({ channels }: { channels: Channel[] }) {
       </div>
     </section>
   );
-}
-
-function ViewTitle({
-  icon: Icon,
-  title,
-  action
-}: {
-  icon: LucideIcon;
-  title: string;
-  action: string;
-}) {
-  return (
-    <div className="view-title">
-      <div>
-        <Icon size={20} aria-hidden="true" />
-        <h1>{title}</h1>
-      </div>
-      <span className="view-action">
-        <Settings2 size={15} aria-hidden="true" />
-        {action}
-      </span>
-    </div>
-  );
-}
-
-function Badge({ value }: { value: string }) {
-  const normalized = value ? value.toLowerCase() : 'unknown';
-  return <span className={`badge ${normalized}`}>{value || 'unknown'}</span>;
-}
-
-function EmptyRow({ colSpan, label }: { colSpan: number; label: string }) {
-  return (
-    <tr>
-      <td colSpan={colSpan} className="empty-row">
-        <ListFilter size={15} aria-hidden="true" />
-        {label}
-      </td>
-    </tr>
-  );
-}
-
-function Quota({ label, value, limit }: { label: string; value: string; limit: string }) {
-  return (
-    <div className="quota">
-      <Activity size={16} aria-hidden="true" />
-      <span>{label}</span>
-      <strong>{value}</strong>
-      <small>{limit}</small>
-    </div>
-  );
-}
-
-function FormFeedback({ state }: { state: RequestState }) {
-  if (state.error) {
-    return <div className="inline-error">{state.error}</div>;
-  }
-  if (state.message) {
-    return <div className="inline-success">{state.message}</div>;
-  }
-  return null;
 }
 
 function formatTime(value: string) {

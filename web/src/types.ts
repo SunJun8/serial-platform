@@ -1,3 +1,15 @@
+export type ViewKey = 'agents' | 'devices' | 'channels' | 'terminal' | 'logs';
+
+export type Language = 'en' | 'zh-CN';
+
+export type RequestState = {
+  busy: boolean;
+  error: string | null;
+  message: string | null;
+};
+
+export type RefreshState = 'idle' | 'loading' | 'success' | 'error';
+
 export type Agent = {
   ID: string;
   Name: string;

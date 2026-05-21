@@ -31,6 +31,13 @@ export async function patchJSON<T, B = unknown>(path: string, body: B): Promise<
   return res.json() as Promise<T>;
 }
 
+export async function deleteNoContent(path: string): Promise<void> {
+  const res = await fetch(path, { method: 'DELETE' });
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+}
+
 export function wsURL(path: string): string {
   const base = new URL(path, window.location.href);
   base.protocol = base.protocol === 'https:' ? 'wss:' : 'ws:';
