@@ -194,6 +194,9 @@ func (srv *Server) readAgentControlMessages(ctx context.Context, agentID string,
 				log.Printf("decode operation result from %s: %v", agentID, err)
 				continue
 			}
+			if srv.terminalOps.complete(result) {
+				continue
+			}
 			if !result.OK {
 				log.Printf("agent %s operation %s failed: %s", agentID, result.RequestID, result.Error)
 			}

@@ -70,19 +70,21 @@ func TestProtocolMessageStructsJSON(t *testing.T) {
 			name: "terminal open",
 			msg: TerminalOpen{
 				Type:      MessageTerminalOpen,
+				RequestID: "request-open",
 				SessionID: "session-1",
 				ChannelID: "channel-1",
 			},
-			want: `{"type":"terminal_open","session_id":"session-1","channel_id":"channel-1"}`,
+			want: `{"type":"terminal_open","request_id":"request-open","session_id":"session-1","channel_id":"channel-1"}`,
 		},
 		{
 			name: "terminal close",
 			msg: TerminalClose{
 				Type:      MessageTerminalClose,
+				RequestID: "request-close",
 				SessionID: "session-1",
 				ChannelID: "channel-1",
 			},
-			want: `{"type":"terminal_close","session_id":"session-1","channel_id":"channel-1"}`,
+			want: `{"type":"terminal_close","request_id":"request-close","session_id":"session-1","channel_id":"channel-1"}`,
 		},
 		{
 			name: "serial config with session",

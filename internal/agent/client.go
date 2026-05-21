@@ -194,7 +194,7 @@ func (client *Client) handleTerminalOpen(ctx context.Context, open protocol.Term
 			}
 		}
 	}
-	client.sendOperationResult(ctx, "", err)
+	client.sendOperationResult(ctx, open.RequestID, err)
 }
 
 func (client *Client) handleTerminalClose(ctx context.Context, closeMessage protocol.TerminalClose, sessions map[string]terminalSession) {
@@ -203,7 +203,7 @@ func (client *Client) handleTerminalClose(ctx context.Context, closeMessage prot
 		err = entry.session.Close()
 		delete(sessions, closeMessage.SessionID)
 	}
-	client.sendOperationResult(ctx, "", err)
+	client.sendOperationResult(ctx, closeMessage.RequestID, err)
 }
 
 func (client *Client) handleTerminalOperation(ctx context.Context, messageType protocol.MessageType, data []byte, sessions map[string]terminalSession) {

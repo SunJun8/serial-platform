@@ -121,12 +121,14 @@ type ChannelStatusUpdate struct {
 
 type TerminalOpen struct {
 	Type      MessageType `json:"type"`
+	RequestID string      `json:"request_id,omitempty"`
 	SessionID string      `json:"session_id"`
 	ChannelID string      `json:"channel_id"`
 }
 
 type TerminalClose struct {
 	Type      MessageType `json:"type"`
+	RequestID string      `json:"request_id,omitempty"`
 	SessionID string      `json:"session_id"`
 	ChannelID string      `json:"channel_id"`
 }

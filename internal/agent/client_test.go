@@ -317,6 +317,7 @@ func TestClientHandlesTerminalOpenWriteAndClose(t *testing.T) {
 		}
 		if err := protocol.WriteJSON(r.Context(), conn, protocol.TerminalOpen{
 			Type:      protocol.MessageTerminalOpen,
+			RequestID: "request-open",
 			SessionID: "session-1",
 			ChannelID: "channel-1",
 		}); err != nil {
@@ -335,6 +336,7 @@ func TestClientHandlesTerminalOpenWriteAndClose(t *testing.T) {
 		results <- readAgentOperationResult(t, r.Context(), conn)
 		if err := protocol.WriteJSON(r.Context(), conn, protocol.TerminalClose{
 			Type:      protocol.MessageTerminalClose,
+			RequestID: "request-close",
 			SessionID: "session-1",
 			ChannelID: "channel-1",
 		}); err != nil {
@@ -362,8 +364,8 @@ func TestClientHandlesTerminalOpenWriteAndClose(t *testing.T) {
 	}()
 
 	openResult := receiveAgentOperationResult(t, ctx, results)
-	if !openResult.OK || openResult.RequestID != "" {
-		t.Fatalf("open result = %+v, want OK with empty request id", openResult)
+	if !openResult.OK || openResult.RequestID != "request-open" {
+		t.Fatalf("open result = %+v, want OK for request-open", openResult)
 	}
 	control.session.waitForOpen(t)
 	if owner := control.session.owner(); owner != "web" {
@@ -377,8 +379,8 @@ func TestClientHandlesTerminalOpenWriteAndClose(t *testing.T) {
 	}
 
 	closeResult := receiveAgentOperationResult(t, ctx, results)
-	if !closeResult.OK || closeResult.RequestID != "" {
-		t.Fatalf("close result = %+v, want OK with empty request id", closeResult)
+	if !closeResult.OK || closeResult.RequestID != "request-close" {
+		t.Fatalf("close result = %+v, want OK for request-close", closeResult)
 	}
 	control.session.waitForClose(t)
 
@@ -421,6 +423,7 @@ func TestClientHandlesTerminalSerialControls(t *testing.T) {
 		messages := []any{
 			protocol.TerminalOpen{
 				Type:      protocol.MessageTerminalOpen,
+				RequestID: "request-open",
 				SessionID: "session-1",
 				ChannelID: "channel-1",
 			},
@@ -483,7 +486,7 @@ func TestClientHandlesTerminalSerialControls(t *testing.T) {
 		done <- client.HandleControlMessages(ctx, agentRFC2217Resolver{control: control}, agent.TunnelDialer{ServerURL: httpSrv.URL})
 	}()
 
-	for _, requestID := range []string{"", "request-config", "request-dtr", "request-rts", "request-break"} {
+	for _, requestID := range []string{"request-open", "request-config", "request-dtr", "request-rts", "request-break"} {
 		result := receiveAgentOperationResult(t, ctx, results)
 		if !result.OK || result.RequestID != requestID {
 			t.Fatalf("operation result = %+v, want OK for %q", result, requestID)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"nhooyr.io/websocket"
@@ -42,6 +43,42 @@ func (o *ControlOwner) Release(channelID, owner string) {
 	}
 }
 
+type terminalOperationRegistry struct {
+	mu      sync.Mutex
+	pending map[string]chan protocol.OperationResult
+}
+
+func newTerminalOperationRegistry() *terminalOperationRegistry {
+	return &terminalOperationRegistry{pending: make(map[string]chan protocol.OperationResult)}
+}
+
+func (r *terminalOperationRegistry) register(requestID string) <-chan protocol.OperationResult {
+	result := make(chan protocol.OperationResult, 1)
+	r.mu.Lock()
+	r.pending[requestID] = result
+	r.mu.Unlock()
+	return result
+}
+
+func (r *terminalOperationRegistry) cancel(requestID string) {
+	r.mu.Lock()
+	delete(r.pending, requestID)
+	r.mu.Unlock()
+}
+
+func (r *terminalOperationRegistry) complete(result protocol.OperationResult) bool {
+	r.mu.Lock()
+	ch, ok := r.pending[result.RequestID]
+	if ok {
+		delete(r.pending, result.RequestID)
+	}
+	r.mu.Unlock()
+	if ok {
+		ch <- result
+	}
+	return ok
+}
+
 func (srv *Server) handleTerminalWebSocket(w http.ResponseWriter, r *http.Request) {
 	channelID := r.PathValue("channelID")
 	conn, err := websocket.Accept(w, r, nil)
@@ -62,24 +99,34 @@ func (srv *Server) handleTerminalWebSocket(w http.ResponseWriter, r *http.Reques
 		_ = conn.Close(websocket.StatusTryAgainLater, err.Error())
 		return
 	}
-	defer srv.controlOwner.Release(channelID, "web")
+	releaseOwner := true
+	defer func() {
+		if releaseOwner {
+			srv.controlOwner.Release(channelID, "web")
+		}
+	}()
 
 	sessionID := uuid.NewString()
-	if err := srv.agentRegistry.send(r.Context(), channel.AgentID, protocol.TerminalOpen{
+	openRequestID := terminalAgentRequestID(sessionID)
+	openResult, err := srv.sendTerminalOperation(r.Context(), channel.AgentID, openRequestID, protocol.TerminalOpen{
 		Type:      protocol.MessageTerminalOpen,
+		RequestID: openRequestID,
 		SessionID: sessionID,
 		ChannelID: channel.ID,
-	}); err != nil {
+	})
+	if err != nil {
 		_ = conn.Close(websocket.StatusInternalError, err.Error())
+		return
+	}
+	if !openResult.OK {
+		_ = conn.Close(websocket.StatusInternalError, openResult.Error)
 		return
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 	defer func() {
-		_ = srv.agentRegistry.send(context.Background(), channel.AgentID, protocol.TerminalClose{
-			Type:      protocol.MessageTerminalClose,
-			SessionID: sessionID,
-			ChannelID: channel.ID,
-		})
+		srv.controlOwner.Release(channelID, "web")
+		releaseOwner = false
+		srv.sendTerminalClose(channel.AgentID, channel.ID, sessionID)
 	}()
 
 	srv.serveTerminalSession(r.Context(), conn, channel, sessionID)
@@ -98,80 +145,121 @@ func (srv *Server) serveTerminalSession(ctx context.Context, conn *websocket.Con
 		if err != nil {
 			return
 		}
-		message, requestID, err := terminalAgentControlMessage(payload, sessionID, channel.ID)
-		if err == nil {
-			err = srv.agentRegistry.send(ctx, channel.AgentID, message)
+		message, browserRequestID, agentRequestID, err := terminalAgentControlMessage(payload, sessionID, channel.ID)
+		var result protocol.OperationResult
+		if err != nil {
+			result = terminalResult(browserRequestID, err)
+		} else {
+			var agentResult protocol.OperationResult
+			agentResult, err = srv.sendTerminalOperation(ctx, channel.AgentID, agentRequestID, message)
+			result = terminalBrowserResult(browserRequestID, agentResult, err)
 		}
-		result := terminalResultFromSend(requestID, err)
 		if err := protocol.WriteJSON(ctx, conn, result); err != nil {
 			return
 		}
 	}
 }
 
-func terminalAgentControlMessage(payload []byte, sessionID, channelID string) (any, string, error) {
+func terminalAgentRequestID(sessionID string) string {
+	return "terminal-" + sessionID + "-" + uuid.NewString()
+}
+
+func (srv *Server) sendTerminalOperation(ctx context.Context, agentID, requestID string, message any) (protocol.OperationResult, error) {
+	resultCh := srv.terminalOps.register(requestID)
+	defer srv.terminalOps.cancel(requestID)
+	if err := srv.agentRegistry.send(ctx, agentID, message); err != nil {
+		return protocol.OperationResult{}, err
+	}
+	select {
+	case result := <-resultCh:
+		return result, nil
+	case <-ctx.Done():
+		return protocol.OperationResult{}, ctx.Err()
+	}
+}
+
+func (srv *Server) sendTerminalClose(agentID, channelID, sessionID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	requestID := terminalAgentRequestID(sessionID)
+	_, _ = srv.sendTerminalOperation(ctx, agentID, requestID, protocol.TerminalClose{
+		Type:      protocol.MessageTerminalClose,
+		RequestID: requestID,
+		SessionID: sessionID,
+		ChannelID: channelID,
+	})
+}
+
+func terminalAgentControlMessage(payload []byte, sessionID, channelID string) (any, string, string, error) {
 	var envelope struct {
 		Type      protocol.MessageType `json:"type"`
 		RequestID string               `json:"request_id"`
 	}
 	if err := json.Unmarshal(payload, &envelope); err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 
+	agentRequestID := terminalAgentRequestID(sessionID)
 	switch envelope.Type {
 	case protocol.MessageTerminalWrite:
 		var msg protocol.TerminalWrite
 		if err := json.Unmarshal(payload, &msg); err != nil {
-			return nil, envelope.RequestID, err
+			return nil, envelope.RequestID, "", err
 		}
+		msg.RequestID = agentRequestID
 		msg.SessionID = sessionID
 		msg.ChannelID = channelID
-		return msg, envelope.RequestID, nil
+		return msg, envelope.RequestID, agentRequestID, nil
 	case protocol.MessageSerialSetConfig:
 		var msg protocol.SerialSetConfig
 		if err := json.Unmarshal(payload, &msg); err != nil {
-			return nil, envelope.RequestID, err
+			return nil, envelope.RequestID, "", err
 		}
+		msg.RequestID = agentRequestID
 		msg.SessionID = sessionID
 		msg.ChannelID = channelID
-		return msg, envelope.RequestID, nil
+		return msg, envelope.RequestID, agentRequestID, nil
 	case protocol.MessageSerialSetDTR:
 		var msg protocol.SerialSetDTR
 		if err := json.Unmarshal(payload, &msg); err != nil {
-			return nil, envelope.RequestID, err
+			return nil, envelope.RequestID, "", err
 		}
+		msg.RequestID = agentRequestID
 		msg.SessionID = sessionID
 		msg.ChannelID = channelID
-		return msg, envelope.RequestID, nil
+		return msg, envelope.RequestID, agentRequestID, nil
 	case protocol.MessageSerialSetRTS:
 		var msg protocol.SerialSetRTS
 		if err := json.Unmarshal(payload, &msg); err != nil {
-			return nil, envelope.RequestID, err
+			return nil, envelope.RequestID, "", err
 		}
+		msg.RequestID = agentRequestID
 		msg.SessionID = sessionID
 		msg.ChannelID = channelID
-		return msg, envelope.RequestID, nil
+		return msg, envelope.RequestID, agentRequestID, nil
 	case protocol.MessageSerialSendBreak:
 		var msg protocol.SerialSendBreak
 		if err := json.Unmarshal(payload, &msg); err != nil {
-			return nil, envelope.RequestID, err
+			return nil, envelope.RequestID, "", err
 		}
+		msg.RequestID = agentRequestID
 		msg.SessionID = sessionID
 		msg.ChannelID = channelID
-		return msg, envelope.RequestID, nil
+		return msg, envelope.RequestID, agentRequestID, nil
 	default:
-		return nil, envelope.RequestID, fmt.Errorf("unsupported terminal message type %q", envelope.Type)
+		return nil, envelope.RequestID, "", fmt.Errorf("unsupported terminal message type %q", envelope.Type)
 	}
 }
 
-func terminalResultFromSend(requestID string, err error) protocol.OperationResult {
+func terminalBrowserResult(requestID string, agentResult protocol.OperationResult, err error) protocol.OperationResult {
 	if err != nil {
 		return terminalResult(requestID, err)
 	}
 	return protocol.OperationResult{
 		Type:      protocol.MessageOperationResult,
 		RequestID: requestID,
-		OK:        true,
+		OK:        agentResult.OK,
+		Error:     agentResult.Error,
 	}
 }
 

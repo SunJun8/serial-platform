@@ -21,6 +21,7 @@ type Server struct {
 	agentRegistry  *agentRegistry
 	tunnels        *TunnelRegistry
 	controlOwner   *ControlOwner
+	terminalOps    *terminalOperationRegistry
 	liveLog        *LiveLogHub
 	serialResolver func(channelID string) (serial.SerialControl, bool)
 }
@@ -33,6 +34,7 @@ func New(config ServerConfig) *Server {
 		agentRegistry:  newAgentRegistry(),
 		tunnels:        NewTunnelRegistry(5 * time.Second),
 		controlOwner:   NewControlOwner(),
+		terminalOps:    newTerminalOperationRegistry(),
 		liveLog:        NewLiveLogHub(),
 		serialResolver: config.SerialResolver,
 	}
