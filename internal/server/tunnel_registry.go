@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"sync"
@@ -15,18 +16,24 @@ var (
 	errTunnelIDEmpty      = errors.New("tunnel id is empty")
 	errTunnelWaiterExists = errors.New("tunnel waiter already exists")
 	errTunnelNoWaiter     = errors.New("tunnel waiter not found")
+	errTunnelCanceled     = errors.New("tunnel wait canceled")
 )
 
 type TunnelRegistry struct {
 	mu      sync.Mutex
 	timeout time.Duration
-	waiters map[string]chan net.Conn
+	waiters map[string]chan tunnelResult
+}
+
+type tunnelResult struct {
+	conn net.Conn
+	err  error
 }
 
 func NewTunnelRegistry(timeout time.Duration) *TunnelRegistry {
 	return &TunnelRegistry{
 		timeout: timeout,
-		waiters: make(map[string]chan net.Conn),
+		waiters: make(map[string]chan tunnelResult),
 	}
 }
 
@@ -68,8 +75,8 @@ func (r *TunnelRegistry) WaitAfterRegister(ctx context.Context, tunnelID string,
 	return r.waitForConn(ctx, tunnelID, waiter)
 }
 
-func (r *TunnelRegistry) registerWaiter(tunnelID string) (chan net.Conn, error) {
-	waiter := make(chan net.Conn, 1)
+func (r *TunnelRegistry) registerWaiter(tunnelID string) (chan tunnelResult, error) {
+	waiter := make(chan tunnelResult, 1)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, exists := r.waiters[tunnelID]; exists {
@@ -79,7 +86,7 @@ func (r *TunnelRegistry) registerWaiter(tunnelID string) (chan net.Conn, error) 
 	return waiter, nil
 }
 
-func (r *TunnelRegistry) waitForConn(ctx context.Context, tunnelID string, waiter chan net.Conn) (net.Conn, error) {
+func (r *TunnelRegistry) waitForConn(ctx context.Context, tunnelID string, waiter chan tunnelResult) (net.Conn, error) {
 	waitCtx := ctx
 	cancel := func() {}
 	if r.timeout > 0 {
@@ -88,11 +95,14 @@ func (r *TunnelRegistry) waitForConn(ctx context.Context, tunnelID string, waite
 	defer cancel()
 
 	select {
-	case conn, ok := <-waiter:
+	case result, ok := <-waiter:
 		if !ok {
 			return nil, context.Canceled
 		}
-		return conn, nil
+		if result.err != nil {
+			return nil, result.err
+		}
+		return result.conn, nil
 	case <-waitCtx.Done():
 		r.mu.Lock()
 		current, exists := r.waiters[tunnelID]
@@ -104,15 +114,18 @@ func (r *TunnelRegistry) waitForConn(ctx context.Context, tunnelID string, waite
 		}
 		r.mu.Unlock()
 
-		conn, ok := <-waiter
+		result, ok := <-waiter
 		if !ok {
 			return nil, context.Canceled
 		}
-		return conn, nil
+		if result.err != nil {
+			return nil, result.err
+		}
+		return result.conn, nil
 	}
 }
 
-func (r *TunnelRegistry) cancelWaiter(tunnelID string, waiter chan net.Conn) {
+func (r *TunnelRegistry) cancelWaiter(tunnelID string, waiter chan tunnelResult) {
 	r.mu.Lock()
 	current, exists := r.waiters[tunnelID]
 	if exists && current == waiter {
@@ -122,13 +135,13 @@ func (r *TunnelRegistry) cancelWaiter(tunnelID string, waiter chan net.Conn) {
 	r.mu.Unlock()
 }
 
-func (r *TunnelRegistry) cancelWaiterAndCloseAttached(tunnelID string, waiter chan net.Conn) {
+func (r *TunnelRegistry) cancelWaiterAndCloseAttached(tunnelID string, waiter chan tunnelResult) {
 	r.cancelWaiter(tunnelID, waiter)
 
 	select {
-	case conn, ok := <-waiter:
-		if ok {
-			_ = conn.Close()
+	case result, ok := <-waiter:
+		if ok && result.conn != nil {
+			_ = result.conn.Close()
 		}
 	default:
 	}
@@ -145,7 +158,7 @@ func (r *TunnelRegistry) Attach(tunnelID string, conn net.Conn) error {
 	r.mu.Lock()
 	waiter, exists := r.waiters[tunnelID]
 	if exists {
-		waiter <- conn
+		waiter <- tunnelResult{conn: conn}
 		delete(r.waiters, tunnelID)
 	}
 	r.mu.Unlock()
@@ -157,6 +170,16 @@ func (r *TunnelRegistry) Attach(tunnelID string, conn net.Conn) error {
 }
 
 func (r *TunnelRegistry) Cancel(tunnelID string) {
+	r.CancelWithError(tunnelID, errTunnelCanceled)
+}
+
+func (r *TunnelRegistry) CancelWithError(tunnelID string, err error) {
+	if err == nil {
+		err = errTunnelCanceled
+	} else if !errors.Is(err, errTunnelCanceled) {
+		err = fmt.Errorf("%w: %w", errTunnelCanceled, err)
+	}
+
 	r.mu.Lock()
 	waiter, exists := r.waiters[tunnelID]
 	if exists {
@@ -165,7 +188,7 @@ func (r *TunnelRegistry) Cancel(tunnelID string) {
 	r.mu.Unlock()
 
 	if exists {
-		close(waiter)
+		waiter <- tunnelResult{err: err}
 	}
 }
 

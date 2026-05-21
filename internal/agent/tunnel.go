@@ -77,7 +77,6 @@ func HandleRFC2217Tunnel(ctx context.Context, conn io.ReadWriteCloser, channelID
 	defer func() {
 		cancel()
 		_ = conn.Close()
-		<-eventsDone
 	}()
 
 	current := config

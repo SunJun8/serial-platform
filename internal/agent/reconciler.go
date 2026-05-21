@@ -41,7 +41,12 @@ type ChannelStatus struct {
 type ReconcileResult struct {
 	Statuses   []ChannelStatus
 	Candidates []DiscoveredDevice
-	Events     []<-chan serial.Event
+	Events     []EventStream
+}
+
+type EventStream struct {
+	Events <-chan serial.Event
+	Cancel func()
 }
 
 type ReconcilerConfig struct {
@@ -364,7 +369,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, channels []ChannelConfig, de
 			worker:      serialWorker,
 			broadcaster: broadcaster,
 		}
-		events, _ := broadcaster.Subscribe()
+		events, eventCancel := broadcaster.Subscribe()
 		done := make(chan struct{})
 		r.workers[channel.ID] = &managedWorker{
 			control: control,
@@ -385,7 +390,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, channels []ChannelConfig, de
 			Status:    "online",
 			DevName:   device.DevName,
 		})
-		result.Events = append(result.Events, events)
+		result.Events = append(result.Events, EventStream{
+			Events: events,
+			Cancel: eventCancel,
+		})
 	}
 
 	for channelID := range r.workers {

@@ -234,6 +234,39 @@ func TestAgentHandlesRFC2217TunnelWithLocalSerialControl(t *testing.T) {
 	}
 }
 
+func TestAgentHandlesRFC2217TunnelReturnsWhenRXWriterIsBlocked(t *testing.T) {
+	control := newAgentRFC2217FakeControl()
+	conn := newBlockingWriteEOFConn()
+	t.Cleanup(conn.releaseWrite)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- agent.HandleRFC2217Tunnel(ctx, conn, "channel-1", control, serial.DefaultConfig())
+	}()
+
+	control.session.waitForOpen(t)
+	control.events <- serial.Event{
+		ChannelID: "channel-1",
+		Direction: serial.DirectionRX,
+		Timestamp: time.Now(),
+		Data:      []byte("blocked-rx"),
+	}
+	conn.waitForWriteBlocked(t)
+	conn.finishRead()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("HandleRFC2217Tunnel returned error: %v", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("HandleRFC2217Tunnel did not return promptly while RX writer was blocked")
+	}
+	control.session.waitForClose(t)
+}
+
 func writeString(writer io.Writer, value string) error {
 	_, err := writer.Write([]byte(value))
 	return err
@@ -372,6 +405,70 @@ func waitForReadUnblocked(t *testing.T, closer *blockingReadWriteCloser) {
 	case <-closer.done:
 	case <-time.After(time.Second):
 		t.Fatal("blocked read did not exit before test cleanup")
+	}
+}
+
+type blockingWriteEOFConn struct {
+	readDone     chan struct{}
+	writeStarted chan struct{}
+	writeRelease chan struct{}
+	closes       int
+	mu           sync.Mutex
+}
+
+func newBlockingWriteEOFConn() *blockingWriteEOFConn {
+	return &blockingWriteEOFConn{
+		readDone:     make(chan struct{}),
+		writeStarted: make(chan struct{}),
+		writeRelease: make(chan struct{}),
+	}
+}
+
+func (c *blockingWriteEOFConn) Read([]byte) (int, error) {
+	<-c.readDone
+	return 0, io.EOF
+}
+
+func (c *blockingWriteEOFConn) Write(p []byte) (int, error) {
+	select {
+	case c.writeStarted <- struct{}{}:
+	default:
+	}
+	select {
+	case <-c.writeRelease:
+		return len(p), nil
+	}
+}
+
+func (c *blockingWriteEOFConn) Close() error {
+	c.mu.Lock()
+	c.closes++
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *blockingWriteEOFConn) finishRead() {
+	select {
+	case <-c.readDone:
+	default:
+		close(c.readDone)
+	}
+}
+
+func (c *blockingWriteEOFConn) releaseWrite() {
+	select {
+	case <-c.writeRelease:
+	default:
+		close(c.writeRelease)
+	}
+}
+
+func (c *blockingWriteEOFConn) waitForWriteBlocked(t *testing.T) {
+	t.Helper()
+	select {
+	case <-c.writeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("RX writer did not enter blocked Write")
 	}
 }
 

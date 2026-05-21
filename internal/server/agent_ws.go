@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -186,6 +187,7 @@ func (srv *Server) readAgentControlMessages(ctx context.Context, agentID string,
 				continue
 			}
 			log.Printf("agent %s tunnel %s error: %s", agentID, tunnelError.TunnelID, tunnelError.Error)
+			srv.tunnels.CancelWithError(tunnelError.TunnelID, errors.New(tunnelError.Error))
 		default:
 			log.Printf("agent %s sent unsupported control message type %q", agentID, envelope.Type)
 		}

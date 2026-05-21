@@ -97,6 +97,30 @@ func TestTunnelRegistryWaitAfterRegisterClosesAttachedConnWhenCallbackFails(t *t
 	}
 }
 
+func TestTunnelRegistryCancelFailsPendingWaitPromptly(t *testing.T) {
+	registry := NewTunnelRegistry(time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	waited := make(chan error, 1)
+	go func() {
+		_, err := registry.WaitAfterRegister(ctx, "tunnel-1", nil)
+		waited <- err
+	}()
+	waitForTunnelWaiter(t, ctx, registry, "tunnel-1")
+
+	registry.Cancel("tunnel-1")
+
+	select {
+	case err := <-waited:
+		if err == nil {
+			t.Fatal("WaitAfterRegister returned nil error, want cancellation error")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("WaitAfterRegister did not return promptly after Cancel")
+	}
+}
+
 func TestTunnelWebSocketConnCloseUsesNetConnClose(t *testing.T) {
 	accepted := make(chan *WSByteConn, 1)
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

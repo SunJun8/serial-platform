@@ -561,7 +561,7 @@ func TestRuntimeScansAndForwardsReconciledEvents(t *testing.T) {
 			return []agent.DiscoveredDevice{{DevName: "/dev/ttyUSB0", IDPath: "id-path-1", PermissionOK: true}}, nil
 		},
 		Reconciler: &runtimeFakeReconciler{
-			result: agent.ReconcileResult{Events: []<-chan serial.Event{events}},
+			result: agent.ReconcileResult{Events: []agent.EventStream{{Events: events}}},
 			done:   reconciled,
 		},
 		ForwardEvents: func(ctx context.Context, in <-chan serial.Event) error {
@@ -599,6 +599,60 @@ func TestRuntimeScansAndForwardsReconciledEvents(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("runtime did not forward reconciled event stream")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != context.Canceled {
+			t.Fatalf("Run error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not stop after context cancellation")
+	}
+}
+
+func TestRuntimeReleasesReconcilerEventStreamWhenForwardingStops(t *testing.T) {
+	backendFactory := newFakeBackendFactory()
+	reconciler := agent.NewReconciler(agent.ReconcilerConfig{BackendFactory: backendFactory})
+	forwarded := make(chan struct{}, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	runtime := agent.NewRuntime(agent.RuntimeConfig{
+		ScanInterval: time.Hour,
+		Channels: []agent.ChannelConfig{{
+			ID:            "channel-1",
+			IDPath:        "id-path-1",
+			DefaultConfig: serial.DefaultConfig(),
+		}},
+		Discover: func(agent.DiscoveryConfig) ([]agent.DiscoveredDevice, error) {
+			return []agent.DiscoveredDevice{{DevName: "/dev/ttyUSB0", IDPath: "id-path-1", PermissionOK: true}}, nil
+		},
+		Reconciler: reconciler,
+		ForwardEvents: func(context.Context, <-chan serial.Event) error {
+			forwarded <- struct{}{}
+			return nil
+		},
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runtime.Run(ctx)
+	}()
+
+	select {
+	case <-forwarded:
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not start event forwarding")
+	}
+
+	backend := backendFactory.backend("/dev/ttyUSB0")
+	if backend == nil {
+		t.Fatal("backend for /dev/ttyUSB0 was not opened")
+	}
+	for i := 0; i < 140; i++ {
+		backend.injectRX(t, []byte{byte(i)})
 	}
 
 	cancel()

@@ -519,8 +519,8 @@ func (runtime *Runtime) scan(ctx context.Context) error {
 		return err
 	}
 	result := runtime.reconciler.Reconcile(ctx, channels, devices)
-	for _, events := range result.Events {
-		runtime.startForwarding(ctx, events)
+	for _, stream := range result.Events {
+		runtime.startForwarding(ctx, stream)
 	}
 	return nil
 }
@@ -536,26 +536,38 @@ func (runtime *Runtime) currentChannels(ctx context.Context) ([]ChannelConfig, e
 	return append([]ChannelConfig(nil), channels...), nil
 }
 
-func (runtime *Runtime) startForwarding(ctx context.Context, events <-chan serial.Event) {
+func (runtime *Runtime) startForwarding(ctx context.Context, stream EventStream) {
 	if runtime.forwardEvents == nil {
+		if stream.Cancel != nil {
+			stream.Cancel()
+		}
+		return
+	}
+	if stream.Events == nil {
+		if stream.Cancel != nil {
+			stream.Cancel()
+		}
 		return
 	}
 
 	runtime.mu.Lock()
-	if _, exists := runtime.forwarding[events]; exists {
+	if _, exists := runtime.forwarding[stream.Events]; exists {
 		runtime.mu.Unlock()
 		return
 	}
-	runtime.forwarding[events] = struct{}{}
+	runtime.forwarding[stream.Events] = struct{}{}
 	runtime.mu.Unlock()
 
 	go func() {
 		defer func() {
+			if stream.Cancel != nil {
+				stream.Cancel()
+			}
 			runtime.mu.Lock()
-			delete(runtime.forwarding, events)
+			delete(runtime.forwarding, stream.Events)
 			runtime.mu.Unlock()
 		}()
-		if err := runtime.forwardEvents(ctx, events); err != nil && ctx.Err() == nil {
+		if err := runtime.forwardEvents(ctx, stream.Events); err != nil && ctx.Err() == nil {
 			log.Printf("forward serial events: %v", err)
 		}
 	}()

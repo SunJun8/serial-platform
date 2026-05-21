@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -120,5 +121,72 @@ func TestAgentWebSocketInitialChannelSyncUsesLocalConnection(t *testing.T) {
 		len(syncMessage.Channels) != 1 ||
 		syncMessage.Channels[0].ID != "channel-1" {
 		t.Fatalf("syncMessage = %+v", syncMessage)
+	}
+}
+
+func TestAgentWebSocketTunnelErrorCancelsPendingTunnelWait(t *testing.T) {
+	db, err := storage.Open(filepath.Join(t.TempDir(), "meta.db"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	srv := New(ServerConfig{DB: db})
+	httpSrv := httptest.NewServer(srv)
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	wsURL := "ws" + strings.TrimPrefix(httpSrv.URL, "http") + "/ws/agent"
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("websocket.Dial returned error: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	if err := protocol.WriteJSON(ctx, conn, protocol.AgentHello{
+		Type:    protocol.MessageAgentHello,
+		AgentID: "agent-1",
+	}); err != nil {
+		t.Fatalf("write agent hello returned error: %v", err)
+	}
+	var accepted protocol.AgentAccepted
+	if err := protocol.ReadJSON(ctx, conn, &accepted); err != nil {
+		t.Fatalf("read agent accepted returned error: %v", err)
+	}
+	var syncMessage protocol.ChannelSync
+	if err := protocol.ReadJSON(ctx, conn, &syncMessage); err != nil {
+		t.Fatalf("read channel sync returned error: %v", err)
+	}
+
+	waited := make(chan error, 1)
+	go func() {
+		_, err := srv.tunnels.WaitAfterRegister(ctx, "tunnel-1", nil)
+		waited <- err
+	}()
+	waitForTunnelWaiter(t, ctx, srv.tunnels, "tunnel-1")
+
+	if err := protocol.WriteJSON(ctx, conn, protocol.TunnelError{
+		Type:     protocol.MessageTunnelError,
+		TunnelID: "tunnel-1",
+		Error:    "open failed",
+	}); err != nil {
+		t.Fatalf("write tunnel_error returned error: %v", err)
+	}
+
+	select {
+	case err := <-waited:
+		if err == nil {
+			t.Fatal("WaitAfterRegister returned nil error, want tunnel error")
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("WaitAfterRegister error = %v, want immediate tunnel error", err)
+		}
+		if !errors.Is(err, errTunnelCanceled) {
+			t.Fatalf("WaitAfterRegister error = %v, want tunnel cancellation", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("WaitAfterRegister did not return promptly after tunnel_error")
 	}
 }

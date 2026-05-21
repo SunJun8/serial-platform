@@ -183,7 +183,7 @@ func TestReconcilerRFC2217ControlReceivesSameRXEventsAsLogForwarding(t *testing.
 	if len(result.Events) != 1 {
 		t.Fatalf("len(Events) = %d, want 1", len(result.Events))
 	}
-	logEvents := result.Events[0]
+	logEvents := result.Events[0].Events
 
 	control, _, err := reconciler.RFC2217Control(ctx, "channel-1")
 	if err != nil {
@@ -232,7 +232,7 @@ func TestReconcilerRFC2217ControlCloseUnsubscribesEventStream(t *testing.T) {
 	if len(result.Events) != 1 {
 		t.Fatalf("len(Events) = %d, want 1", len(result.Events))
 	}
-	logEvents := result.Events[0]
+	logEvents := result.Events[0].Events
 
 	control, _, err := reconciler.RFC2217Control(ctx, "channel-1")
 	if err != nil {
@@ -466,7 +466,7 @@ func TestReconcilerClosesWorkerWhenChannelDisabled(t *testing.T) {
 	if len(result.Events) != 1 {
 		t.Fatalf("len(Events) = %d, want 1", len(result.Events))
 	}
-	events := result.Events[0]
+	events := result.Events[0].Events
 	backend := backendFactory.backend("/dev/ttyUSB0")
 	if backend == nil {
 		t.Fatal("backend for /dev/ttyUSB0 was not opened")
