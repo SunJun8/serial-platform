@@ -123,14 +123,18 @@ func (w *SegmentWriter) WriteFrame(frame protocol.LogFrame) error {
 	return nil
 }
 
-func (w *SegmentWriter) Close() (SegmentInfo, error) {
-	info := SegmentInfo{
+func (w *SegmentWriter) Info() SegmentInfo {
+	return SegmentInfo{
 		RelativePath: w.relPath,
 		SizeBytes:    w.sizeBytes,
 		FrameCount:   w.frameCount,
 		StartTime:    w.startTime,
 		EndTime:      w.endTime,
 	}
+}
+
+func (w *SegmentWriter) Close() (SegmentInfo, error) {
+	info := w.Info()
 	if w.file == nil {
 		return info, nil
 	}

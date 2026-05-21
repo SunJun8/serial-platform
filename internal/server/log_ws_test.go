@@ -2,7 +2,9 @@ package server_test
 
 import (
 	"context"
+	"io"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -66,6 +68,83 @@ func TestLogWebSocketAcceptsBinaryFrame(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(logDir, segments[0].Path)); err != nil {
 		t.Fatalf("log segment file does not exist: %v", err)
+	}
+}
+
+func TestLogWebSocketRegistersActiveSegmentBeforeClose(t *testing.T) {
+	root := t.TempDir()
+	db, err := storage.Open(filepath.Join(root, "meta.db"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	logDir := filepath.Join(root, "logs")
+	srv := server.New(server.ServerConfig{DB: db, LogDir: logDir})
+	httpSrv := httptest.NewServer(srv)
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	conn := dialLogWebSocket(t, ctx, httpSrv.URL)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	now := time.Now().UTC()
+	encoded, err := protocol.EncodeLogFrame(protocol.LogFrame{
+		ChannelID:   "channel-1",
+		Seq:         1,
+		TimestampNS: now.UnixNano(),
+		Direction:   protocol.DirectionRX,
+		Flags:       protocol.FlagRaw,
+		Payload:     []byte("active boot\n"),
+	})
+	if err != nil {
+		t.Fatalf("EncodeLogFrame returned error: %v", err)
+	}
+
+	if err := conn.Write(ctx, websocket.MessageBinary, encoded); err != nil {
+		t.Fatalf("conn.Write returned error: %v", err)
+	}
+
+	segments := waitForLogSegments(t, db, "channel-1", now.Add(-time.Second), now.Add(time.Second))
+	if len(segments) != 1 {
+		t.Fatalf("len(segments) = %d, want 1", len(segments))
+	}
+	segment := segments[0]
+	if segment.Status != storage.LogSegmentStatusActive {
+		t.Fatalf("Status = %q, want %q", segment.Status, storage.LogSegmentStatusActive)
+	}
+	if segment.FrameCount != 1 {
+		t.Fatalf("FrameCount = %d, want 1", segment.FrameCount)
+	}
+	if segment.SizeBytes <= 0 {
+		t.Fatalf("SizeBytes = %d, want > 0", segment.SizeBytes)
+	}
+	if _, err := os.Stat(filepath.Join(logDir, segment.Path)); err != nil {
+		t.Fatalf("log segment file does not exist: %v", err)
+	}
+
+	query := url.Values{
+		"channel_id": {"channel-1"},
+		"from":       {now.Add(-time.Second).Format(time.RFC3339Nano)},
+		"to":         {now.Add(time.Second).Format(time.RFC3339Nano)},
+		"format":     {"raw"},
+	}
+	resp, err := httpSrv.Client().Get(httpSrv.URL + "/api/logs/download?" + query.Encode())
+	if err != nil {
+		t.Fatalf("GET /api/logs/download returned error: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll returned error: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200, body = %s", resp.StatusCode, string(body))
+	}
+	if len(body) == 0 {
+		t.Fatal("raw download is empty, want active segment bytes")
 	}
 }
 

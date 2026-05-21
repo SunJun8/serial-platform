@@ -51,6 +51,10 @@ func (srv *Server) handleLogWebSocket(w http.ResponseWriter, r *http.Request) {
 			_ = conn.Close(websocket.StatusInternalError, err.Error())
 			return
 		}
+		if err := srv.upsertLogSegment(frame.ChannelID, writer.Info(), storage.LogSegmentStatusActive); err != nil {
+			_ = conn.Close(websocket.StatusInternalError, err.Error())
+			return
+		}
 		srv.liveLog.Publish(frame)
 	}
 }
@@ -81,20 +85,23 @@ func (srv *Server) closeLogWriters(conn *websocket.Conn, writers map[string]*log
 		if info.FrameCount == 0 {
 			continue
 		}
-		err = srv.db.InsertLogSegment(storage.LogSegment{
-			ChannelID:  channelID,
-			Path:       info.RelativePath,
-			StartTime:  info.StartTime,
-			EndTime:    info.EndTime,
-			SizeBytes:  info.SizeBytes,
-			FrameCount: info.FrameCount,
-			Status:     storage.LogSegmentStatusClosed,
-		})
-		if err != nil {
+		if err := srv.upsertLogSegment(channelID, info, storage.LogSegmentStatusClosed); err != nil {
 			closeStatus = websocket.StatusInternalError
 			closeReason = err.Error()
 		}
 	}
 
 	_ = conn.Close(closeStatus, closeReason)
+}
+
+func (srv *Server) upsertLogSegment(channelID string, info logstore.SegmentInfo, status storage.LogSegmentStatus) error {
+	return srv.db.UpsertLogSegment(storage.LogSegment{
+		ChannelID:  channelID,
+		Path:       info.RelativePath,
+		StartTime:  info.StartTime,
+		EndTime:    info.EndTime,
+		SizeBytes:  info.SizeBytes,
+		FrameCount: info.FrameCount,
+		Status:     status,
+	})
 }

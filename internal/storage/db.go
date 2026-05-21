@@ -462,6 +462,32 @@ INSERT INTO log_segments (
 	return err
 }
 
+func (db *DB) UpsertLogSegment(segment LogSegment) error {
+	result, err := db.sql.Exec(`
+UPDATE log_segments
+SET channel_id = ?,
+  start_time = ?,
+  end_time = ?,
+  size_bytes = ?,
+  frame_count = ?,
+  status = ?
+WHERE path = ?
+`, segment.ChannelID, segment.StartTime.Format(time.RFC3339Nano),
+		segment.EndTime.Format(time.RFC3339Nano), segment.SizeBytes, segment.FrameCount,
+		string(segment.Status), segment.Path)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected > 0 {
+		return nil
+	}
+	return db.InsertLogSegment(segment)
+}
+
 func (db *DB) ListLogSegments(channelID string, start, end time.Time) ([]LogSegment, error) {
 	rows, err := db.sql.Query(`
 SELECT id, channel_id, path, start_time, end_time, size_bytes, frame_count, status
