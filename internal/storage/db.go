@@ -266,6 +266,39 @@ func (db *DB) DeleteChannel(id string) error {
 	return nil
 }
 
+func (db *DB) DeleteChannelWithLogSegments(id string) error {
+	tx, err := db.sql.Begin()
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	result, err := tx.Exec(`DELETE FROM channels WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	if _, err := tx.Exec(`DELETE FROM log_segments WHERE channel_id = ?`, id); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
 type scanner interface {
 	Scan(dest ...any) error
 }

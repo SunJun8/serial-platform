@@ -43,6 +43,12 @@ func (o *ControlOwner) Release(channelID, owner string) {
 	}
 }
 
+func (o *ControlOwner) Busy(channelID string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.owners[channelID] != ""
+}
+
 type terminalOperationRegistry struct {
 	mu      sync.Mutex
 	pending map[string]terminalPendingOperation

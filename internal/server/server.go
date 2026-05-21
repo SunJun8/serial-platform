@@ -61,6 +61,10 @@ func (srv *Server) LiveLog() *LiveLogHub {
 	return srv.liveLog
 }
 
+func (srv *Server) ControlOwnerForTest() *ControlOwner {
+	return srv.controlOwner
+}
+
 func (srv *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	srv.mux.ServeHTTP(w, r)
 }
@@ -71,6 +75,7 @@ func (srv *Server) routes() {
 	srv.mux.HandleFunc("GET /api/channels", srv.handleListChannels)
 	srv.mux.HandleFunc("POST /api/channels", srv.handleCreateChannel)
 	srv.mux.HandleFunc("PATCH /api/channels/{channelID}", srv.handleUpdateChannel)
+	srv.mux.HandleFunc("DELETE /api/channels/{channelID}", srv.handleDeleteChannel)
 	srv.mux.HandleFunc("POST /api/channels/{channelID}/enable", srv.handleEnableChannel)
 	srv.mux.HandleFunc("POST /api/channels/{channelID}/disable", srv.handleDisableChannel)
 	srv.mux.HandleFunc("GET /api/candidates", srv.handleListCandidates)

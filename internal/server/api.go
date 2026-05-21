@@ -211,6 +211,43 @@ func (srv *Server) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, channel)
 }
 
+func (srv *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
+	channelID := r.PathValue("channelID")
+	if channelID == "" {
+		writeBadRequest(w, "channel id is required")
+		return
+	}
+	if _, err := srv.db.GetChannel(channelID); errors.Is(err, storage.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "channel not found"})
+		return
+	} else if err != nil {
+		writeError(w, err)
+		return
+	}
+	if srv.controlOwner.Busy(channelID) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "channel is busy"})
+		return
+	}
+	segments, err := srv.db.ListLogSegments(channelID, time.Time{}, time.Now().UTC())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := srv.deleteChannelLogFiles(segments); err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := srv.db.DeleteChannelWithLogSegments(channelID); err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "channel not found"})
+			return
+		}
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (srv *Server) handleEnableChannel(w http.ResponseWriter, r *http.Request) {
 	srv.updateChannelStatus(w, r, storage.ChannelStatusOffline)
 }

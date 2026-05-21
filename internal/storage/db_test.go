@@ -620,6 +620,67 @@ func TestDBUpdatesChannelStatusForAgentOnly(t *testing.T) {
 	}
 }
 
+func TestDBDeletesChannelWithLogSegments(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "meta.db"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	channel := testChannel("channel-1")
+	if err := db.UpsertChannel(channel); err != nil {
+		t.Fatalf("UpsertChannel returned error: %v", err)
+	}
+	other := testChannel("channel-2")
+	other.RFC2217Port = 7002
+	if err := db.UpsertChannel(other); err != nil {
+		t.Fatalf("UpsertChannel other returned error: %v", err)
+	}
+	now := time.Unix(1700000000, 0).UTC()
+	for _, segment := range []LogSegment{
+		{ChannelID: "channel-1", Path: "channel-1/a.rlog", StartTime: now, EndTime: now, SizeBytes: 12, FrameCount: 1, Status: LogSegmentStatusClosed},
+		{ChannelID: "channel-1", Path: "channel-1/b.rlog", StartTime: now, EndTime: now, SizeBytes: 24, FrameCount: 2, Status: LogSegmentStatusClosed},
+		{ChannelID: "channel-2", Path: "channel-2/c.rlog", StartTime: now, EndTime: now, SizeBytes: 36, FrameCount: 3, Status: LogSegmentStatusClosed},
+	} {
+		if err := db.InsertLogSegment(segment); err != nil {
+			t.Fatalf("InsertLogSegment returned error: %v", err)
+		}
+	}
+
+	if err := db.DeleteChannelWithLogSegments("channel-1"); err != nil {
+		t.Fatalf("DeleteChannelWithLogSegments returned error: %v", err)
+	}
+	if _, err := db.GetChannel("channel-1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetChannel channel-1 error = %v, want ErrNotFound", err)
+	}
+	deletedSegments, err := db.ListLogSegments("channel-1", now.Add(-time.Second), now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("ListLogSegments deleted returned error: %v", err)
+	}
+	if len(deletedSegments) != 0 {
+		t.Fatalf("deleted channel segments = %+v, want empty", deletedSegments)
+	}
+	remainingSegments, err := db.ListLogSegments("channel-2", now.Add(-time.Second), now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("ListLogSegments remaining returned error: %v", err)
+	}
+	if len(remainingSegments) != 1 || remainingSegments[0].Path != "channel-2/c.rlog" {
+		t.Fatalf("remaining segments = %+v, want channel-2 segment", remainingSegments)
+	}
+}
+
+func TestDBDeleteChannelWithLogSegmentsRejectsMissingChannel(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "meta.db"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if err := db.DeleteChannelWithLogSegments("missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("DeleteChannelWithLogSegments error = %v, want ErrNotFound", err)
+	}
+}
+
 func testChannel(id string) Channel {
 	return Channel{
 		ID:              id,

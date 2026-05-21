@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -274,6 +275,200 @@ func TestCandidateConfirmRejectsInvalidSerialConfig(t *testing.T) {
 				t.Fatalf("GetCandidate after failed confirm returned error: %v", err)
 			}
 		})
+	}
+}
+
+func TestChannelAPIDeleteRemovesChannelAndLogs(t *testing.T) {
+	root := t.TempDir()
+	db := newAPITestDB(t)
+	logDir := filepath.Join(root, "logs")
+	channel := apiTestChannel("channel-1", 7001)
+	if err := db.UpsertChannel(channel); err != nil {
+		t.Fatalf("UpsertChannel returned error: %v", err)
+	}
+	now := time.Unix(1700000000, 0).UTC()
+	segmentPath := filepath.Join("channel-1", "segment.rlog")
+	fullSegmentPath := filepath.Join(logDir, segmentPath)
+	if err := os.MkdirAll(filepath.Dir(fullSegmentPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := os.WriteFile(fullSegmentPath, []byte("raw"), 0o644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	if err := db.InsertLogSegment(storage.LogSegment{ChannelID: "channel-1", Path: segmentPath, StartTime: now, EndTime: now, SizeBytes: 3, FrameCount: 1, Status: storage.LogSegmentStatusClosed}); err != nil {
+		t.Fatalf("InsertLogSegment returned error: %v", err)
+	}
+	srv := server.New(server.ServerConfig{DB: db, LogDir: logDir})
+	httpSrv := httptest.NewServer(srv)
+	t.Cleanup(httpSrv.Close)
+
+	req, err := http.NewRequest(http.MethodDelete, httpSrv.URL+"/api/channels/channel-1", nil)
+	if err != nil {
+		t.Fatalf("NewRequest returned error: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do returned error: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE status = %s, body = %s", resp.Status, body)
+	}
+	if _, err := db.GetChannel("channel-1"); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("GetChannel error = %v, want ErrNotFound", err)
+	}
+	if _, err := os.Stat(fullSegmentPath); !os.IsNotExist(err) {
+		t.Fatalf("log segment stat error = %v, want not exist", err)
+	}
+	segments, err := db.ListLogSegments("channel-1", now.Add(-time.Second), now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("ListLogSegments returned error: %v", err)
+	}
+	if len(segments) != 0 {
+		t.Fatalf("segments = %+v, want empty", segments)
+	}
+}
+
+func TestChannelAPIDeleteMissingChannelReturnsNotFound(t *testing.T) {
+	db := newAPITestDB(t)
+	srv := server.New(server.ServerConfig{DB: db, LogDir: t.TempDir()})
+	httpSrv := httptest.NewServer(srv)
+	t.Cleanup(httpSrv.Close)
+	req, err := http.NewRequest(http.MethodDelete, httpSrv.URL+"/api/channels/missing", nil)
+	if err != nil {
+		t.Fatalf("NewRequest returned error: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do returned error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("DELETE missing status = %s, body = %s", resp.Status, body)
+	}
+}
+
+func TestChannelAPIDeleteBusyChannelReturnsConflict(t *testing.T) {
+	db := newAPITestDB(t)
+	if err := db.UpsertChannel(apiTestChannel("channel-1", 7001)); err != nil {
+		t.Fatalf("UpsertChannel returned error: %v", err)
+	}
+	srv := server.New(server.ServerConfig{DB: db, LogDir: t.TempDir()})
+	owners := srv.ControlOwnerForTest()
+	if err := owners.Acquire("channel-1", "web"); err != nil {
+		t.Fatalf("Acquire returned error: %v", err)
+	}
+	httpSrv := httptest.NewServer(srv)
+	t.Cleanup(httpSrv.Close)
+	req, err := http.NewRequest(http.MethodDelete, httpSrv.URL+"/api/channels/channel-1", nil)
+	if err != nil {
+		t.Fatalf("NewRequest returned error: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do returned error: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("DELETE busy status = %s, body = %s", resp.Status, body)
+	}
+	if _, err := db.GetChannel("channel-1"); err != nil {
+		t.Fatalf("GetChannel after busy delete returned error: %v", err)
+	}
+}
+
+func TestChannelAPIDeleteIgnoresMissingLogFiles(t *testing.T) {
+	db := newAPITestDB(t)
+	if err := db.UpsertChannel(apiTestChannel("channel-1", 7001)); err != nil {
+		t.Fatalf("UpsertChannel returned error: %v", err)
+	}
+	now := time.Unix(1700000000, 0).UTC()
+	if err := db.InsertLogSegment(storage.LogSegment{
+		ChannelID:  "channel-1",
+		Path:       filepath.Join("channel-1", "missing.rlog"),
+		StartTime:  now,
+		EndTime:    now,
+		SizeBytes:  3,
+		FrameCount: 1,
+		Status:     storage.LogSegmentStatusClosed,
+	}); err != nil {
+		t.Fatalf("InsertLogSegment returned error: %v", err)
+	}
+	srv := server.New(server.ServerConfig{DB: db, LogDir: t.TempDir()})
+	httpSrv := httptest.NewServer(srv)
+	t.Cleanup(httpSrv.Close)
+
+	req, err := http.NewRequest(http.MethodDelete, httpSrv.URL+"/api/channels/channel-1", nil)
+	if err != nil {
+		t.Fatalf("NewRequest returned error: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do returned error: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE status = %s, body = %s", resp.Status, body)
+	}
+	if _, err := db.GetChannel("channel-1"); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("GetChannel error = %v, want ErrNotFound", err)
+	}
+	segments, err := db.ListLogSegments("channel-1", now.Add(-time.Second), now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("ListLogSegments returned error: %v", err)
+	}
+	if len(segments) != 0 {
+		t.Fatalf("segments = %+v, want empty", segments)
+	}
+}
+
+func TestChannelAPIDeleteRejectsInvalidLogSegmentPathAndKeepsMetadata(t *testing.T) {
+	db := newAPITestDB(t)
+	if err := db.UpsertChannel(apiTestChannel("channel-1", 7001)); err != nil {
+		t.Fatalf("UpsertChannel returned error: %v", err)
+	}
+	now := time.Unix(1700000000, 0).UTC()
+	if err := db.InsertLogSegment(storage.LogSegment{
+		ChannelID:  "channel-1",
+		Path:       filepath.Join("..", "segment.rlog"),
+		StartTime:  now,
+		EndTime:    now,
+		SizeBytes:  3,
+		FrameCount: 1,
+		Status:     storage.LogSegmentStatusClosed,
+	}); err != nil {
+		t.Fatalf("InsertLogSegment returned error: %v", err)
+	}
+	srv := server.New(server.ServerConfig{DB: db, LogDir: t.TempDir()})
+	httpSrv := httptest.NewServer(srv)
+	t.Cleanup(httpSrv.Close)
+
+	req, err := http.NewRequest(http.MethodDelete, httpSrv.URL+"/api/channels/channel-1", nil)
+	if err != nil {
+		t.Fatalf("NewRequest returned error: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do returned error: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("DELETE invalid segment status = %s, body = %s", resp.Status, body)
+	}
+	if _, err := db.GetChannel("channel-1"); err != nil {
+		t.Fatalf("GetChannel after failed delete returned error: %v", err)
+	}
+	segments, err := db.ListLogSegments("channel-1", now.Add(-time.Second), now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("ListLogSegments returned error: %v", err)
+	}
+	if len(segments) != 1 || segments[0].Path != filepath.Join("..", "segment.rlog") {
+		t.Fatalf("segments = %+v, want original invalid segment metadata", segments)
 	}
 }
 
