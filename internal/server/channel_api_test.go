@@ -308,6 +308,7 @@ func TestChannelAPIDeleteRemovesChannelAndLogs(t *testing.T) {
 		t.Fatalf("InsertLogSegment future returned error: %v", err)
 	}
 	srv := server.New(server.ServerConfig{DB: db, LogDir: logDir})
+	owners := srv.ControlOwnerForTest()
 	httpSrv := httptest.NewServer(srv)
 	t.Cleanup(httpSrv.Close)
 
@@ -339,6 +340,9 @@ func TestChannelAPIDeleteRemovesChannelAndLogs(t *testing.T) {
 	}
 	if len(segments) != 0 {
 		t.Fatalf("segments = %+v, want empty", segments)
+	}
+	if err := owners.Acquire("channel-1", "web"); err != nil {
+		t.Fatalf("Acquire after delete returned error: %v", err)
 	}
 }
 
@@ -439,11 +443,32 @@ func TestChannelAPIDeleteIgnoresMissingLogFiles(t *testing.T) {
 }
 
 func TestChannelAPIDeleteRejectsInvalidLogSegmentPathAndKeepsMetadata(t *testing.T) {
+	root := t.TempDir()
 	db := newAPITestDB(t)
 	if err := db.UpsertChannel(apiTestChannel("channel-1", 7001)); err != nil {
 		t.Fatalf("UpsertChannel returned error: %v", err)
 	}
 	now := time.Unix(1700000000, 0).UTC()
+	logDir := filepath.Join(root, "logs")
+	validSegmentPath := filepath.Join("channel-1", "valid.rlog")
+	fullValidSegmentPath := filepath.Join(logDir, validSegmentPath)
+	if err := os.MkdirAll(filepath.Dir(fullValidSegmentPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := os.WriteFile(fullValidSegmentPath, []byte("valid"), 0o644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	if err := db.InsertLogSegment(storage.LogSegment{
+		ChannelID:  "channel-1",
+		Path:       validSegmentPath,
+		StartTime:  now,
+		EndTime:    now,
+		SizeBytes:  5,
+		FrameCount: 1,
+		Status:     storage.LogSegmentStatusClosed,
+	}); err != nil {
+		t.Fatalf("InsertLogSegment valid returned error: %v", err)
+	}
 	if err := db.InsertLogSegment(storage.LogSegment{
 		ChannelID:  "channel-1",
 		Path:       filepath.Join("..", "segment.rlog"),
@@ -453,9 +478,9 @@ func TestChannelAPIDeleteRejectsInvalidLogSegmentPathAndKeepsMetadata(t *testing
 		FrameCount: 1,
 		Status:     storage.LogSegmentStatusClosed,
 	}); err != nil {
-		t.Fatalf("InsertLogSegment returned error: %v", err)
+		t.Fatalf("InsertLogSegment invalid returned error: %v", err)
 	}
-	srv := server.New(server.ServerConfig{DB: db, LogDir: t.TempDir()})
+	srv := server.New(server.ServerConfig{DB: db, LogDir: logDir})
 	httpSrv := httptest.NewServer(srv)
 	t.Cleanup(httpSrv.Close)
 
@@ -475,12 +500,19 @@ func TestChannelAPIDeleteRejectsInvalidLogSegmentPathAndKeepsMetadata(t *testing
 	if _, err := db.GetChannel("channel-1"); err != nil {
 		t.Fatalf("GetChannel after failed delete returned error: %v", err)
 	}
+	if _, err := os.Stat(fullValidSegmentPath); err != nil {
+		t.Fatalf("valid log segment stat error = %v, want file retained", err)
+	}
 	segments, err := db.ListLogSegments("channel-1", now.Add(-time.Second), now.Add(time.Second))
 	if err != nil {
 		t.Fatalf("ListLogSegments returned error: %v", err)
 	}
-	if len(segments) != 1 || segments[0].Path != filepath.Join("..", "segment.rlog") {
-		t.Fatalf("segments = %+v, want original invalid segment metadata", segments)
+	segmentPaths := make(map[string]bool, len(segments))
+	for _, segment := range segments {
+		segmentPaths[segment.Path] = true
+	}
+	if len(segments) != 2 || !segmentPaths[filepath.Join("..", "segment.rlog")] || !segmentPaths[validSegmentPath] {
+		t.Fatalf("segments = %+v, want original valid and invalid segment metadata", segments)
 	}
 }
 

@@ -217,15 +217,17 @@ func (srv *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, "channel id is required")
 		return
 	}
+	if err := srv.controlOwner.Acquire(channelID, "delete"); err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "channel is busy"})
+		return
+	}
+	defer srv.controlOwner.Release(channelID, "delete")
+
 	if _, err := srv.db.GetChannel(channelID); errors.Is(err, storage.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "channel not found"})
 		return
 	} else if err != nil {
 		writeError(w, err)
-		return
-	}
-	if srv.controlOwner.Busy(channelID) {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "channel is busy"})
 		return
 	}
 	segments, err := srv.db.ListLogSegmentsForChannel(channelID)
