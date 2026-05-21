@@ -971,6 +971,66 @@ func TestRuntimeForwardsSnapshotAndStatusAfterReconcile(t *testing.T) {
 	}
 }
 
+func TestRuntimeForwardsStatusesWhenSnapshotForwardFails(t *testing.T) {
+	statuses := make(chan []agent.ChannelStatus, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	runtime := agent.NewRuntime(agent.RuntimeConfig{
+		ScanInterval: time.Hour,
+		Discover: func(agent.DiscoveryConfig) ([]agent.DiscoveredDevice, error) {
+			return []agent.DiscoveredDevice{{DevName: "/dev/ttyUSB0", IDPath: "id-path-1", PermissionOK: true}}, nil
+		},
+		Reconciler: &runtimeFakeReconciler{
+			result: agent.ReconcileResult{
+				Candidates: []agent.DiscoveredDevice{{
+					DevName:      "/dev/ttyUSB1",
+					IDPath:       "candidate-id-path",
+					PermissionOK: true,
+				}},
+				Statuses: []agent.ChannelStatus{{
+					ChannelID: "channel-1",
+					Status:    "online",
+					DevName:   "/dev/ttyUSB0",
+				}},
+			},
+		},
+		ForwardSnapshot: func(context.Context, []agent.DiscoveredDevice) error {
+			return errors.New("snapshot forward failed")
+		},
+		ForwardStatuses: func(_ context.Context, in []agent.ChannelStatus) error {
+			statuses <- append([]agent.ChannelStatus(nil), in...)
+			return nil
+		},
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runtime.Run(ctx)
+	}()
+
+	select {
+	case got := <-statuses:
+		if len(got) != 1 || got[0].ChannelID != "channel-1" || got[0].Status != "online" || got[0].DevName != "/dev/ttyUSB0" {
+			t.Fatalf("forwarded statuses = %+v, want channel-1 online on /dev/ttyUSB0", got)
+		}
+	case err := <-done:
+		t.Fatalf("Run returned before forwarding status after snapshot error: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not forward statuses after snapshot forward error")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != context.Canceled {
+			t.Fatalf("Run error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not stop after context cancellation")
+	}
+}
+
 func TestRuntimeReleasesReconcilerEventStreamWhenForwardingStops(t *testing.T) {
 	backendFactory := newFakeBackendFactory()
 	reconciler := agent.NewReconciler(agent.ReconcilerConfig{BackendFactory: backendFactory})

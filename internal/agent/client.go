@@ -691,17 +691,18 @@ func (runtime *Runtime) scan(ctx context.Context) error {
 	for _, stream := range result.Events {
 		runtime.startForwarding(ctx, stream)
 	}
+	var forwardErr error
 	if len(result.Candidates) > 0 && runtime.forwardSnapshot != nil {
 		if err := runtime.forwardSnapshot(ctx, result.Candidates); err != nil {
-			return err
+			forwardErr = errors.Join(forwardErr, err)
 		}
 	}
 	if len(result.Statuses) > 0 && runtime.forwardStatuses != nil {
 		if err := runtime.forwardStatuses(ctx, result.Statuses); err != nil {
-			return err
+			forwardErr = errors.Join(forwardErr, err)
 		}
 	}
-	return nil
+	return forwardErr
 }
 
 func NewDeviceSnapshotMessage(agentID string, devices []DiscoveredDevice) protocol.DeviceSnapshot {
