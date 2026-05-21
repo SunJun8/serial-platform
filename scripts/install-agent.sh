@@ -79,6 +79,12 @@ id "${RUN_USER}" >/dev/null 2>&1 || {
   echo "user not found: ${RUN_USER}" >&2
   exit 1
 }
+RUN_UID="$(id -u "${RUN_USER}")"
+RUN_GROUP="$(id -gn "${RUN_USER}")"
+if [[ "${RUN_UID}" -eq 0 ]]; then
+  echo "host-agent service must run as a non-root user" >&2
+  exit 1
+fi
 
 command -v systemctl >/dev/null || {
   echo "systemctl is required" >&2
@@ -118,7 +124,8 @@ if getent group dialout >/dev/null 2>&1; then
 fi
 
 install -m 0755 "${BIN}" "${INSTALL_PATH}"
-install -d -m 0755 -o "${RUN_USER}" "${DATA_DIR}"
+install -d -m 0755 -o "${RUN_USER}" -g "${RUN_GROUP}" "${DATA_DIR}"
+chown -R "${RUN_USER}:${RUN_GROUP}" "${DATA_DIR}"
 
 cat >"${SERVICE_PATH}" <<UNIT
 [Unit]
