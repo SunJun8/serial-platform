@@ -17,17 +17,14 @@ func TestRealSerialLoopback(t *testing.T) {
 	if dev == "" {
 		dev = "/dev/ttyUSB0"
 	}
-	required := os.Getenv("REAL_SERIAL_REQUIRED") == "1"
+	required := isRealSerialRequired()
 
 	if _, err := os.Stat(dev); err != nil {
 		message := fmt.Sprintf("real serial: %s not found", dev)
 		if isPermissionError(err) {
 			message = fmt.Sprintf("real serial: permission denied for %s, add current user to dialout", dev)
 		}
-		if required {
-			t.Fatal(message)
-		}
-		t.Skip(skipMessage(message))
+		failOrSkip(t, required, message)
 	}
 
 	port, err := bugserial.Open(dev, &bugserial.Mode{
@@ -41,19 +38,20 @@ func TestRealSerialLoopback(t *testing.T) {
 		if isPermissionError(err) {
 			message = fmt.Sprintf("real serial: permission denied for %s, add current user to dialout", dev)
 		}
-		if required {
-			t.Fatal(message)
-		}
-		t.Skip(skipMessage(message))
+		failOrSkip(t, required, message)
 	}
 	defer port.Close()
 	if err := port.SetReadTimeout(100 * time.Millisecond); err != nil {
-		t.Fatalf("real serial: set read timeout for %s failed: %v", dev, err)
+		failOrSkip(t, required, fmt.Sprintf("real serial: set read timeout for %s failed: %v", dev, err))
 	}
 
 	payload := []byte(fmt.Sprintf("serial-platform-loopback-%d\r\n", time.Now().UnixNano()))
-	if _, err := port.Write(payload); err != nil {
-		t.Fatalf("real serial: write %s failed: %v", dev, err)
+	n, err := port.Write(payload)
+	if err != nil {
+		failOrSkip(t, required, fmt.Sprintf("real serial: write %s failed: %v", dev, err))
+	}
+	if n != len(payload) {
+		failOrSkip(t, required, fmt.Sprintf("real serial: short write on %s: wrote %d of %d bytes", dev, n, len(payload)))
 	}
 
 	deadline := time.Now().Add(2 * time.Second)
@@ -62,14 +60,26 @@ func TestRealSerialLoopback(t *testing.T) {
 	for time.Now().Before(deadline) && !bytes.Contains(got, payload) {
 		n, err := port.Read(buf)
 		if err != nil {
-			t.Fatalf("real serial: read %s failed: %v", dev, err)
+			failOrSkip(t, required, fmt.Sprintf("real serial: read %s failed: %v", dev, err))
 		}
 		got = append(got, buf[:n]...)
 	}
 	if !bytes.Contains(got, payload) {
-		t.Fatalf("real serial: loopback payload not observed on %s, got %q want %q", dev, got, payload)
+		failOrSkip(t, required, fmt.Sprintf("real serial: loopback payload not observed within 2s on %s, got %q want %q", dev, got, payload))
 	}
 	t.Logf("real serial: passed %s", dev)
+}
+
+func isRealSerialRequired() bool {
+	return os.Getenv("REAL_SERIAL_REQUIRED") == "1"
+}
+
+func failOrSkip(t *testing.T, required bool, message string) {
+	t.Helper()
+	if required {
+		t.Fatal(message)
+	}
+	t.Skip(skipMessage(message))
 }
 
 func isPermissionError(err error) bool {

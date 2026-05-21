@@ -31,14 +31,14 @@ make build
 
 ## 真实串口 loopback 测试
 
-默认设备是 `/dev/ttyUSB0`。运行前请将该串口的 TX 和 RX 短接。
+默认设备是 `/dev/ttyUSB0`。执行强制测试前请将该串口的 TX 和 RX 短接。
 
 ```bash
 make test
 make test-real-serial REAL_SERIAL_DEV=/dev/ttyUSB0
 ```
 
-`make test` 会运行普通测试，并尝试执行非阻塞真实串口 loopback 测试；如果设备不存在或权限不足，会报告 skipped 原因并继续。`make test-real-serial` 是强制测试，设备不存在、权限不足或 loopback 不通都会失败。
+`make test` 会运行普通测试，并尝试执行非阻塞真实串口 loopback 探测；如果设备不存在、权限不足、打开失败、读写失败或 2 秒内没有读回 loopback payload，会报告 skipped 原因并继续。`make test-real-serial` 是强制测试，设备不存在、权限不足、读写失败或 loopback 不通都会失败。
 
 如果遇到权限不足，建议将当前用户加入 `dialout` 组后重新登录，或临时切换当前 shell 的组：
 
