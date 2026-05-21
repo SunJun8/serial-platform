@@ -17,6 +17,7 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  overflow-x: hidden;
 }
 
 button,
@@ -45,6 +46,15 @@ a.button-link:hover {
   border-color: #6f7e73;
 }
 
+button:focus-visible,
+a.button-link:focus-visible,
+input:focus-visible,
+select:focus-visible,
+[role="button"]:focus-visible {
+  outline: 2px solid #2d6cdf;
+  outline-offset: 2px;
+}
+
 button:disabled,
 a.button-link.disabled {
   cursor: not-allowed;
@@ -68,6 +78,8 @@ a.button-link {
 .shell {
   display: grid;
   grid-template-columns: 232px minmax(0, 1fr);
+  width: 100%;
+  min-width: 0;
   min-height: 100vh;
 }
 
@@ -169,6 +181,7 @@ small {
 .topbar {
   justify-content: space-between;
   gap: 12px;
+  min-width: 0;
   min-height: 48px;
 }
 
@@ -209,6 +222,7 @@ small {
 
 .toolbar {
   gap: 8px;
+  min-width: 0;
 }
 
 .search-box {
@@ -216,6 +230,7 @@ small {
   align-items: center;
   gap: 7px;
   min-width: 240px;
+  max-width: 100%;
   padding: 0 10px;
   border: 1px solid #b9c0ba;
   border-radius: 6px;
@@ -228,7 +243,7 @@ small {
   min-width: 0;
   height: 32px;
   border: 0;
-  outline: none;
+  outline: 0;
   background: transparent;
 }
 
@@ -258,6 +273,7 @@ small {
 .view-title {
   justify-content: space-between;
   gap: 12px;
+  min-width: 0;
 }
 
 .view-title div,
@@ -265,6 +281,7 @@ small {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .view-title h1 {
@@ -329,10 +346,12 @@ small {
 }
 
 .table-wrap {
+  max-width: 100%;
   overflow: auto;
 }
 
 table {
+  min-width: 640px;
   width: 100%;
   border-collapse: collapse;
   font-size: 13px;
@@ -633,6 +652,7 @@ td small {
 
 .selected-row {
   background: #eef5ec;
+  cursor: pointer;
 }
 
 .selected-row td {
@@ -678,6 +698,8 @@ td small {
     top: 0;
     z-index: 2;
     display: block;
+    min-width: 0;
+    max-width: 100vw;
     border-right: 0;
     border-bottom: 1px solid #cfd5cf;
   }
@@ -689,6 +711,8 @@ td small {
 
   .nav-list {
     display: flex;
+    min-width: 0;
+    max-width: 100%;
     overflow-x: auto;
   }
 
@@ -705,6 +729,7 @@ td small {
 
   .toolbar,
   .search-box {
+    min-width: 0;
     width: 100%;
   }
 
@@ -721,12 +746,59 @@ td small {
 }
 
 @media (max-width: 560px) {
+  body {
+    min-width: 0;
+  }
+
+  .shell,
+  .workspace,
+  .view,
+  .panel,
+  .topbar,
+  .metrics,
+  .toolbar,
+  .split-layout,
+  .workflow,
+  .channels-layout,
+  .terminal-layout,
+  .terminal-panel,
+  .controls,
+  .log-export-form,
+  .quota-grid {
+    min-width: 0;
+    max-width: 100%;
+  }
+
   .workspace {
     padding: 10px;
   }
 
   .metric {
-    min-width: calc(50% - 4px);
+    min-width: 0;
+    width: calc(50% - 4px);
+  }
+
+  .panel-head {
+    align-items: flex-start;
+    flex-direction: column;
+    padding: 8px 10px;
+  }
+
+  .view-action {
+    overflow-wrap: anywhere;
+  }
+
+  .terminal-input {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .terminal-input button {
+    grid-column: 2;
+    justify-self: end;
+  }
+
+  .log-line {
+    grid-template-columns: 64px 32px minmax(0, 1fr);
   }
 
   .row-actions button {

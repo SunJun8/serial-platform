@@ -242,8 +242,8 @@ export function App() {
         {activeView === 'calibration' ? (
           <CalibrationView agents={agents} channels={channels} onRefresh={refresh} />
         ) : null}
-        {activeView === 'terminal' ? <TerminalView channels={visibleChannels} /> : null}
-        {activeView === 'logs' ? <LogsView channels={visibleChannels} /> : null}
+        {activeView === 'terminal' ? <TerminalView channels={channels} /> : null}
+        {activeView === 'logs' ? <LogsView channels={channels} /> : null}
       </main>
     </div>
   );
@@ -397,9 +397,13 @@ function ChannelsView({
         default_stop_bits: 1,
         default_flow: 'none'
       };
-      await postJSON<Channel, ChannelPayload>('/api/channels', payload);
+      const created = await postJSON<Channel, ChannelPayload>('/api/channels', payload);
       await onRefresh();
-      setForm(defaultManualForm(allChannels, agents));
+      setForm({
+        ...defaultManualForm([...allChannels, created], agents),
+        agentID: form.agentID,
+        baud: form.baud
+      });
       setManualState({ busy: false, error: null, message: 'Manual channel added' });
     } catch (err) {
       setManualState({ busy: false, error: errorMessage(err), message: null });
@@ -661,6 +665,15 @@ function CalibrationView({
                         key={candidate.ID}
                         className={candidate.ID === selectedCandidate?.ID ? 'selected-row' : undefined}
                         onClick={() => setSelectedID(candidate.ID)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            setSelectedID(candidate.ID);
+                          }
+                        }}
+                        role="button"
+                        tabIndex={0}
+                        aria-pressed={candidate.ID === selectedCandidate?.ID}
                       >
                         <td>
                           <strong>{candidateAlias(candidate)}</strong>
@@ -806,8 +819,12 @@ function TerminalView({ channels }: { channels: Channel[] }) {
     if (!selectedChannelID) {
       return undefined;
     }
+    let closedByCleanup = false;
     const socket = new WebSocket(wsURL(`/ws/live-log/${encodeURIComponent(selectedChannelID)}`));
     socket.onmessage = (event) => {
+      if (closedByCleanup) {
+        return;
+      }
       try {
         const frame = JSON.parse(String(event.data)) as LiveLogFrame;
         setLogLines((current) => appendLogLine(current, frame));
@@ -816,14 +833,21 @@ function TerminalView({ channels }: { channels: Channel[] }) {
       }
     };
     socket.onerror = () => {
+      if (closedByCleanup) {
+        return;
+      }
       setLogLines((current) => appendTextLine(current, 'ERR', 'live log websocket error'));
     };
     socket.onclose = (event) => {
+      if (closedByCleanup) {
+        return;
+      }
       if (event.code !== 1000) {
         setLogLines((current) => appendTextLine(current, 'ERR', event.reason || 'live log closed'));
       }
     };
     return () => {
+      closedByCleanup = true;
       socket.close();
     };
   }, [selectedChannelID]);
@@ -854,8 +878,15 @@ function TerminalView({ channels }: { channels: Channel[] }) {
     setTerminalError(null);
     const socket = new WebSocket(wsURL(`/ws/terminal/${encodeURIComponent(selectedChannelID)}`));
     terminalWS.current = socket;
-    socket.onopen = () => setTerminalStatus('connected');
+    socket.onopen = () => {
+      if (terminalWS.current === socket) {
+        setTerminalStatus('connected');
+      }
+    };
     socket.onmessage = (event) => {
+      if (terminalWS.current !== socket) {
+        return;
+      }
       try {
         const result = JSON.parse(String(event.data)) as OperationResult;
         setPendingCount((count) => Math.max(0, count - 1));
@@ -867,13 +898,17 @@ function TerminalView({ channels }: { channels: Channel[] }) {
       }
     };
     socket.onerror = () => {
+      if (terminalWS.current !== socket) {
+        return;
+      }
       setTerminalStatus('error');
       setTerminalError('terminal websocket error');
     };
     socket.onclose = (event) => {
-      if (terminalWS.current === socket) {
-        terminalWS.current = null;
+      if (terminalWS.current !== socket) {
+        return;
       }
+      terminalWS.current = null;
       setPendingCount(0);
       setTerminalStatus(event.code === 1000 ? 'idle' : 'error');
       setTerminalError(event.code === 1000 ? null : event.reason || 'terminal closed');
