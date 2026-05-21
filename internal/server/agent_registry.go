@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"nhooyr.io/websocket"
 
 	"serial-platform/internal/protocol"
@@ -13,20 +14,28 @@ import (
 
 var errAgentNotConnected = errors.New("agent not connected")
 
+type agentConnectionToken string
+
 type AgentConnection struct {
-	AgentID string
-	Conn    *websocket.Conn
-	SeenAt  time.Time
-	sendMu  *sync.Mutex
+	AgentID      string
+	Conn         *websocket.Conn
+	SeenAt       time.Time
+	connectionID agentConnectionToken
+	sendMu       *sync.Mutex
 }
 
 func newAgentConnection(agentID string, conn *websocket.Conn, seenAt time.Time) AgentConnection {
 	return AgentConnection{
-		AgentID: agentID,
-		Conn:    conn,
-		SeenAt:  seenAt,
-		sendMu:  &sync.Mutex{},
+		AgentID:      agentID,
+		Conn:         conn,
+		SeenAt:       seenAt,
+		connectionID: agentConnectionToken(uuid.NewString()),
+		sendMu:       &sync.Mutex{},
 	}
+}
+
+func (conn AgentConnection) token() agentConnectionToken {
+	return conn.connectionID
 }
 
 type agentRegistry struct {

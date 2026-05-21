@@ -67,7 +67,7 @@ func (srv *Server) handleAgentWebSocket(w http.ResponseWriter, r *http.Request) 
 	srv.agentRegistry.upsert(agentConn)
 	defer func() {
 		srv.agentRegistry.remove(hello.AgentID, conn)
-		srv.terminalOps.failAgent(hello.AgentID, errAgentNotConnected)
+		srv.terminalOps.failConnection(hello.AgentID, agentConn.token(), errAgentNotConnected)
 	}()
 
 	accepted := protocol.AgentAccepted{
@@ -83,7 +83,7 @@ func (srv *Server) handleAgentWebSocket(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	srv.readAgentControlMessages(ctx, hello.AgentID, conn)
+	srv.readAgentControlMessages(ctx, hello.AgentID, agentConn.token(), conn)
 }
 
 func (srv *Server) sendChannelSync(ctx context.Context, agentID string) error {
@@ -136,7 +136,7 @@ func channelConfigMessage(channel storage.Channel) protocol.ChannelConfigMessage
 	}
 }
 
-func (srv *Server) readAgentControlMessages(ctx context.Context, agentID string, conn *websocket.Conn) {
+func (srv *Server) readAgentControlMessages(ctx context.Context, agentID string, connectionID agentConnectionToken, conn *websocket.Conn) {
 	for {
 		var envelope struct {
 			Type protocol.MessageType `json:"type"`
@@ -197,7 +197,7 @@ func (srv *Server) readAgentControlMessages(ctx context.Context, agentID string,
 				log.Printf("decode operation result from %s: %v", agentID, err)
 				continue
 			}
-			if srv.terminalOps.complete(agentID, result) {
+			if srv.terminalOps.complete(agentID, connectionID, result) {
 				continue
 			}
 			if !result.OK {

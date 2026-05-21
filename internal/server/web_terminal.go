@@ -49,37 +49,38 @@ type terminalOperationRegistry struct {
 }
 
 type terminalPendingOperation struct {
-	agentID string
-	result  chan protocol.OperationResult
+	agentID      string
+	connectionID agentConnectionToken
+	result       chan protocol.OperationResult
 }
 
 func newTerminalOperationRegistry() *terminalOperationRegistry {
 	return &terminalOperationRegistry{pending: make(map[string]terminalPendingOperation)}
 }
 
-func (r *terminalOperationRegistry) register(agentID, requestID string) (<-chan protocol.OperationResult, error) {
+func (r *terminalOperationRegistry) register(agentID string, connectionID agentConnectionToken, requestID string) (<-chan protocol.OperationResult, error) {
 	result := make(chan protocol.OperationResult, 1)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, exists := r.pending[requestID]; exists {
 		return nil, fmt.Errorf("terminal operation request %s is already pending", requestID)
 	}
-	r.pending[requestID] = terminalPendingOperation{agentID: agentID, result: result}
+	r.pending[requestID] = terminalPendingOperation{agentID: agentID, connectionID: connectionID, result: result}
 	return result, nil
 }
 
-func (r *terminalOperationRegistry) cancel(agentID, requestID string) {
+func (r *terminalOperationRegistry) cancel(agentID string, connectionID agentConnectionToken, requestID string) {
 	r.mu.Lock()
-	if pending, ok := r.pending[requestID]; ok && pending.agentID == agentID {
+	if pending, ok := r.pending[requestID]; ok && pending.agentID == agentID && pending.connectionID == connectionID {
 		delete(r.pending, requestID)
 	}
 	r.mu.Unlock()
 }
 
-func (r *terminalOperationRegistry) complete(agentID string, result protocol.OperationResult) bool {
+func (r *terminalOperationRegistry) complete(agentID string, connectionID agentConnectionToken, result protocol.OperationResult) bool {
 	r.mu.Lock()
 	pending, ok := r.pending[result.RequestID]
-	if ok && pending.agentID == agentID {
+	if ok && pending.agentID == agentID && pending.connectionID == connectionID {
 		delete(r.pending, result.RequestID)
 	} else {
 		ok = false
@@ -91,7 +92,7 @@ func (r *terminalOperationRegistry) complete(agentID string, result protocol.Ope
 	return ok
 }
 
-func (r *terminalOperationRegistry) failAgent(agentID string, err error) {
+func (r *terminalOperationRegistry) failConnection(agentID string, connectionID agentConnectionToken, err error) {
 	r.mu.Lock()
 	type failedOperation struct {
 		requestID string
@@ -99,7 +100,7 @@ func (r *terminalOperationRegistry) failAgent(agentID string, err error) {
 	}
 	results := make([]failedOperation, 0)
 	for requestID, pending := range r.pending {
-		if pending.agentID != agentID {
+		if pending.agentID != agentID || pending.connectionID != connectionID {
 			continue
 		}
 		delete(r.pending, requestID)
@@ -239,12 +240,17 @@ func terminalAgentRequestID(sessionID string) string {
 }
 
 func (srv *Server) sendTerminalOperation(ctx context.Context, agentID, requestID string, message any) (protocol.OperationResult, bool, error) {
-	resultCh, err := srv.terminalOps.register(agentID, requestID)
+	agentConn, ok := srv.agentRegistry.get(agentID)
+	if !ok {
+		return protocol.OperationResult{}, false, errAgentNotConnected
+	}
+	connectionID := agentConn.token()
+	resultCh, err := srv.terminalOps.register(agentID, connectionID, requestID)
 	if err != nil {
 		return protocol.OperationResult{}, false, err
 	}
-	defer srv.terminalOps.cancel(agentID, requestID)
-	if err := srv.agentRegistry.send(ctx, agentID, message); err != nil {
+	defer srv.terminalOps.cancel(agentID, connectionID, requestID)
+	if err := agentConn.send(ctx, message); err != nil {
 		return protocol.OperationResult{}, false, err
 	}
 	select {
