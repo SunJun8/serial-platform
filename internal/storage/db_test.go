@@ -669,6 +669,37 @@ func TestDBDeletesChannelWithLogSegments(t *testing.T) {
 	}
 }
 
+func TestDBListLogSegmentsForChannelIncludesFutureSegments(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "meta.db"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	now := time.Unix(1700000000, 0).UTC()
+	future := now.Add(24 * time.Hour)
+	for _, segment := range []LogSegment{
+		{ChannelID: "channel-1", Path: "channel-1/current.rlog", StartTime: now, EndTime: now, SizeBytes: 12, FrameCount: 1, Status: LogSegmentStatusClosed},
+		{ChannelID: "channel-1", Path: "channel-1/future.rlog", StartTime: future, EndTime: future, SizeBytes: 24, FrameCount: 2, Status: LogSegmentStatusClosed},
+		{ChannelID: "channel-2", Path: "channel-2/other.rlog", StartTime: future, EndTime: future, SizeBytes: 36, FrameCount: 3, Status: LogSegmentStatusClosed},
+	} {
+		if err := db.InsertLogSegment(segment); err != nil {
+			t.Fatalf("InsertLogSegment returned error: %v", err)
+		}
+	}
+
+	segments, err := db.ListLogSegmentsForChannel("channel-1")
+	if err != nil {
+		t.Fatalf("ListLogSegmentsForChannel returned error: %v", err)
+	}
+	if len(segments) != 2 {
+		t.Fatalf("len(segments) = %d, want 2: %+v", len(segments), segments)
+	}
+	if segments[0].Path != "channel-1/current.rlog" || segments[1].Path != "channel-1/future.rlog" {
+		t.Fatalf("segments = %+v, want current and future channel-1 segments", segments)
+	}
+}
+
 func TestDBDeleteChannelWithLogSegmentsRejectsMissingChannel(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "meta.db"))
 	if err != nil {

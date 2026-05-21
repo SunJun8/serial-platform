@@ -278,6 +278,9 @@ func (db *DB) DeleteChannelWithLogSegments(id string) error {
 		}
 	}()
 
+	if _, err := tx.Exec(`DELETE FROM log_segments WHERE channel_id = ?`, id); err != nil {
+		return err
+	}
 	result, err := tx.Exec(`DELETE FROM channels WHERE id = ?`, id)
 	if err != nil {
 		return err
@@ -288,9 +291,6 @@ func (db *DB) DeleteChannelWithLogSegments(id string) error {
 	}
 	if affected == 0 {
 		return ErrNotFound
-	}
-	if _, err := tx.Exec(`DELETE FROM log_segments WHERE channel_id = ?`, id); err != nil {
-		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return err
@@ -527,6 +527,25 @@ ORDER BY start_time
 	}
 	defer rows.Close()
 
+	return scanLogSegments(rows)
+}
+
+func (db *DB) ListLogSegmentsForChannel(channelID string) ([]LogSegment, error) {
+	rows, err := db.sql.Query(`
+SELECT id, channel_id, path, start_time, end_time, size_bytes, frame_count, status
+FROM log_segments
+WHERE channel_id = ?
+ORDER BY start_time
+`, channelID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanLogSegments(rows)
+}
+
+func scanLogSegments(rows *sql.Rows) ([]LogSegment, error) {
 	out := make([]LogSegment, 0)
 	for rows.Next() {
 		var segment LogSegment
@@ -537,6 +556,7 @@ ORDER BY start_time
 			&segment.SizeBytes, &segment.FrameCount, &status); err != nil {
 			return nil, err
 		}
+		var err error
 		segment.StartTime, err = time.Parse(time.RFC3339Nano, startText)
 		if err != nil {
 			return nil, err

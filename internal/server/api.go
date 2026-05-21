@@ -228,7 +228,7 @@ func (srv *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "channel is busy"})
 		return
 	}
-	segments, err := srv.db.ListLogSegments(channelID, time.Time{}, time.Now().UTC())
+	segments, err := srv.db.ListLogSegmentsForChannel(channelID)
 	if err != nil {
 		writeError(w, err)
 		return

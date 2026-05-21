@@ -298,6 +298,15 @@ func TestChannelAPIDeleteRemovesChannelAndLogs(t *testing.T) {
 	if err := db.InsertLogSegment(storage.LogSegment{ChannelID: "channel-1", Path: segmentPath, StartTime: now, EndTime: now, SizeBytes: 3, FrameCount: 1, Status: storage.LogSegmentStatusClosed}); err != nil {
 		t.Fatalf("InsertLogSegment returned error: %v", err)
 	}
+	futureSegmentPath := filepath.Join("channel-1", "future.rlog")
+	fullFutureSegmentPath := filepath.Join(logDir, futureSegmentPath)
+	if err := os.WriteFile(fullFutureSegmentPath, []byte("future"), 0o644); err != nil {
+		t.Fatalf("WriteFile future returned error: %v", err)
+	}
+	future := time.Now().UTC().Add(24 * time.Hour)
+	if err := db.InsertLogSegment(storage.LogSegment{ChannelID: "channel-1", Path: futureSegmentPath, StartTime: future, EndTime: future, SizeBytes: 6, FrameCount: 1, Status: storage.LogSegmentStatusClosed}); err != nil {
+		t.Fatalf("InsertLogSegment future returned error: %v", err)
+	}
 	srv := server.New(server.ServerConfig{DB: db, LogDir: logDir})
 	httpSrv := httptest.NewServer(srv)
 	t.Cleanup(httpSrv.Close)
@@ -320,6 +329,9 @@ func TestChannelAPIDeleteRemovesChannelAndLogs(t *testing.T) {
 	}
 	if _, err := os.Stat(fullSegmentPath); !os.IsNotExist(err) {
 		t.Fatalf("log segment stat error = %v, want not exist", err)
+	}
+	if _, err := os.Stat(fullFutureSegmentPath); !os.IsNotExist(err) {
+		t.Fatalf("future log segment stat error = %v, want not exist", err)
 	}
 	segments, err := db.ListLogSegments("channel-1", now.Add(-time.Second), now.Add(time.Second))
 	if err != nil {
