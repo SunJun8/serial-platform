@@ -1,9 +1,17 @@
-.PHONY: test test-unit build fmt web
+.PHONY: test test-unit test-real-serial-soft test-real-serial build fmt web
 
-test: test-unit
+GO_TEST_PACKAGES := $(shell go list ./... | grep -v '/internal/e2e$$')
+
+test: test-unit test-real-serial-soft
 
 test-unit:
-	go test ./...
+	go test $(GO_TEST_PACKAGES)
+
+test-real-serial-soft:
+	REAL_SERIAL_DEV="$(REAL_SERIAL_DEV)" REAL_SERIAL_SOFT=1 REAL_SERIAL_REQUIRED= go test -v ./internal/e2e -run TestRealSerialLoopback -count=1
+
+test-real-serial:
+	REAL_SERIAL_DEV="$(REAL_SERIAL_DEV)" REAL_SERIAL_REQUIRED=1 go test -v ./internal/e2e -run TestRealSerialLoopback -count=1
 
 fmt:
 	gofmt -w cmd internal
