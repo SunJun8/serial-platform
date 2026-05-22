@@ -31,7 +31,7 @@ export function ChannelsPage({
   const [statusBusyID, setStatusBusyID] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Channel | null>(null);
   const [deleteState, setDeleteState] = useState<RequestState>(emptyRequest);
-  const [deletedChannelID, setDeletedChannelID] = useState<string | null>(null);
+  const [deletedChannelIDs, setDeletedChannelIDs] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
     setForm((current) => ({
@@ -72,7 +72,7 @@ export function ChannelsPage({
   }
 
   async function setChannelEnabled(channel: Channel, enabled: boolean) {
-    if (channel.ID === deletedChannelID) {
+    if (deleteState.busy || deletedChannelIDs.has(channel.ID)) {
       return;
     }
     setStatusBusyID(channel.ID);
@@ -88,13 +88,13 @@ export function ChannelsPage({
   }
 
   async function deleteChannel(channel: Channel) {
-    if (channel.ID === deletedChannelID) {
+    if (deleteState.busy || deletedChannelIDs.has(channel.ID)) {
       return;
     }
     setDeleteState({ busy: true, error: null, message: null });
     try {
       await deleteNoContent(`/api/channels/${encodeURIComponent(channel.ID)}`);
-      setDeletedChannelID(channel.ID);
+      setDeletedChannelIDs((current) => new Set(current).add(channel.ID));
     } catch (err) {
       setDeleteState({ busy: false, error: errorMessage(err), message: null });
       return;
@@ -140,7 +140,7 @@ export function ChannelsPage({
                   <EmptyRow colSpan={7} label={t('noChannelsMatch')} />
                 ) : (
                   channels.map((channel) => {
-                    const deleteSucceeded = channel.ID === deletedChannelID;
+                    const deleteSucceeded = deletedChannelIDs.has(channel.ID);
                     return (
                       <tr key={channel.ID}>
                         <td>
@@ -161,7 +161,7 @@ export function ChannelsPage({
                         <td className="row-actions">
                           <button
                             type="button"
-                            disabled={deleteSucceeded || statusBusyID === channel.ID}
+                            disabled={deleteSucceeded || deleteState.busy || statusBusyID === channel.ID}
                             onClick={() => void setChannelEnabled(channel, channel.Status === 'disabled')}
                           >
                             {channel.Status === 'disabled' ? t('enable') : t('disable')}
@@ -187,7 +187,7 @@ export function ChannelsPage({
             </table>
           </div>
           {deleteTarget ? (
-            <div className="danger-confirm" role="alert" aria-labelledby="delete-channel-title">
+            <div className="danger-confirm" aria-labelledby="delete-channel-title">
               <h3 id="delete-channel-title">{deleteTarget.Alias || deleteTarget.AutoName}</h3>
               <p>{t('deleteChannelConfirm')}</p>
               <FormFeedback state={deleteState} />
@@ -199,7 +199,7 @@ export function ChannelsPage({
                   type="button"
                   className="danger"
                   onClick={() => void deleteChannel(deleteTarget)}
-                  disabled={deleteState.busy || deleteTarget.ID === deletedChannelID}
+                  disabled={deleteState.busy || deletedChannelIDs.has(deleteTarget.ID)}
                 >
                   {deleteState.busy ? t('deleting') : t('confirmDelete')}
                 </button>
