@@ -700,6 +700,57 @@ func TestDBListLogSegmentsForChannelIncludesFutureSegments(t *testing.T) {
 	}
 }
 
+func TestDBUpsertLogSegmentIfChannelExistsSkipsDeletedChannel(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "meta.db"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	channel := testChannel("channel-1")
+	if err := db.UpsertChannel(channel); err != nil {
+		t.Fatalf("UpsertChannel returned error: %v", err)
+	}
+	now := time.Unix(1700000000, 0).UTC()
+	segment := LogSegment{
+		ChannelID:  "channel-1",
+		Path:       "channel-1/segment.rlog",
+		StartTime:  now,
+		EndTime:    now,
+		SizeBytes:  12,
+		FrameCount: 1,
+		Status:     LogSegmentStatusActive,
+	}
+	wrote, err := db.UpsertLogSegmentIfChannelExists(segment)
+	if err != nil {
+		t.Fatalf("UpsertLogSegmentIfChannelExists existing returned error: %v", err)
+	}
+	if !wrote {
+		t.Fatal("UpsertLogSegmentIfChannelExists existing wrote = false, want true")
+	}
+	if err := db.DeleteChannelWithLogSegments("channel-1"); err != nil {
+		t.Fatalf("DeleteChannelWithLogSegments returned error: %v", err)
+	}
+
+	segment.SizeBytes = 24
+	segment.FrameCount = 2
+	segment.Status = LogSegmentStatusClosed
+	wrote, err = db.UpsertLogSegmentIfChannelExists(segment)
+	if err != nil {
+		t.Fatalf("UpsertLogSegmentIfChannelExists deleted returned error: %v", err)
+	}
+	if wrote {
+		t.Fatal("UpsertLogSegmentIfChannelExists deleted wrote = true, want false")
+	}
+	segments, err := db.ListLogSegments("channel-1", now.Add(-time.Second), now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("ListLogSegments returned error: %v", err)
+	}
+	if len(segments) != 0 {
+		t.Fatalf("segments = %+v, want empty", segments)
+	}
+}
+
 func TestDBDeleteChannelWithLogSegmentsRejectsMissingChannel(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "meta.db"))
 	if err != nil {

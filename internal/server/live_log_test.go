@@ -142,6 +142,7 @@ func TestLogWebSocketPublishesToLiveLogSubscribers(t *testing.T) {
 		t.Fatalf("Open returned error: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+	upsertLogTestChannel(t, db, "channel-1")
 
 	srv := server.New(server.ServerConfig{DB: db, LogDir: filepath.Join(root, "logs")})
 	httpSrv := httptest.NewServer(srv)

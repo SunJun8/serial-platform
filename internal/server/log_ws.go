@@ -1,7 +1,11 @@
 package server
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
+	"path/filepath"
+	"strings"
 
 	"nhooyr.io/websocket"
 
@@ -40,6 +44,14 @@ func (srv *Server) handleLogWebSocket(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			_ = conn.Close(websocket.StatusInvalidFramePayloadData, "invalid log frame")
 			return
+		}
+		if err := validateLogChannelID(frame.ChannelID); err != nil {
+			_ = conn.Close(websocket.StatusInternalError, err.Error())
+			return
+		}
+		if !srv.channelExists(frame.ChannelID) {
+			srv.closeAndRemoveLogWriter(writers, frame.ChannelID)
+			continue
 		}
 
 		writer, err := srv.logWriterForChannel(writers, frame.ChannelID)
@@ -95,6 +107,9 @@ func (srv *Server) closeLogWriters(conn *websocket.Conn, writers map[string]*log
 		if info.FrameCount == 0 {
 			continue
 		}
+		if !srv.channelExists(channelID) {
+			continue
+		}
 		if err := srv.upsertLogSegment(channelID, info, storage.LogSegmentStatusClosed); err != nil {
 			closeStatus = websocket.StatusInternalError
 			closeReason = err.Error()
@@ -104,8 +119,41 @@ func (srv *Server) closeLogWriters(conn *websocket.Conn, writers map[string]*log
 	_ = conn.Close(closeStatus, closeReason)
 }
 
+func (srv *Server) closeAndRemoveLogWriter(writers map[string]*logstore.SegmentWriter, channelID string) {
+	writer, ok := writers[channelID]
+	if !ok {
+		return
+	}
+	_, _ = writer.Close()
+	delete(writers, channelID)
+}
+
+func validateLogChannelID(channelID string) error {
+	if channelID == "" {
+		return errors.New("channel id is required")
+	}
+	if filepath.IsAbs(channelID) || strings.Contains(channelID, "..") {
+		return fmt.Errorf("invalid channel id %q", channelID)
+	}
+	for _, ch := range channelID {
+		if ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '.' || ch == '_' || ch == '-' {
+			continue
+		}
+		return fmt.Errorf("invalid channel id %q", channelID)
+	}
+	return nil
+}
+
+func (srv *Server) channelExists(channelID string) bool {
+	if channelID == "" {
+		return false
+	}
+	_, err := srv.db.GetChannel(channelID)
+	return err == nil || !errors.Is(err, storage.ErrNotFound)
+}
+
 func (srv *Server) upsertLogSegment(channelID string, info logstore.SegmentInfo, status storage.LogSegmentStatus) error {
-	return srv.db.UpsertLogSegment(storage.LogSegment{
+	_, err := srv.db.UpsertLogSegmentIfChannelExists(storage.LogSegment{
 		ChannelID:  channelID,
 		Path:       info.RelativePath,
 		StartTime:  info.StartTime,
@@ -114,4 +162,5 @@ func (srv *Server) upsertLogSegment(channelID string, info logstore.SegmentInfo,
 		FrameCount: info.FrameCount,
 		Status:     status,
 	})
+	return err
 }

@@ -513,6 +513,34 @@ ON CONFLICT(path) DO UPDATE SET
 	return err
 }
 
+func (db *DB) UpsertLogSegmentIfChannelExists(segment LogSegment) (bool, error) {
+	result, err := db.sql.Exec(`
+INSERT INTO log_segments (
+  channel_id, path, start_time, end_time, size_bytes, frame_count, status
+)
+SELECT ?, ?, ?, ?, ?, ?, ?
+WHERE EXISTS (SELECT 1 FROM channels WHERE id = ?)
+ON CONFLICT(path) DO UPDATE SET
+  channel_id = excluded.channel_id,
+  start_time = excluded.start_time,
+  end_time = excluded.end_time,
+  size_bytes = excluded.size_bytes,
+  frame_count = excluded.frame_count,
+  status = excluded.status
+WHERE EXISTS (SELECT 1 FROM channels WHERE id = excluded.channel_id)
+`, segment.ChannelID, segment.Path, segment.StartTime.Format(time.RFC3339Nano),
+		segment.EndTime.Format(time.RFC3339Nano), segment.SizeBytes, segment.FrameCount,
+		string(segment.Status), segment.ChannelID)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
+}
+
 func (db *DB) ListLogSegments(channelID string, start, end time.Time) ([]LogSegment, error) {
 	rows, err := db.sql.Query(`
 SELECT id, channel_id, path, start_time, end_time, size_bytes, frame_count, status

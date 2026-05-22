@@ -2,7 +2,9 @@ package server_test
 
 import (
 	"context"
+	"errors"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -25,6 +27,7 @@ func TestLogWebSocketAcceptsBinaryFrame(t *testing.T) {
 		t.Fatalf("Open returned error: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+	upsertLogTestChannel(t, db, "channel-1")
 
 	logDir := filepath.Join(root, "logs")
 	srv := server.New(server.ServerConfig{DB: db, LogDir: logDir})
@@ -56,7 +59,7 @@ func TestLogWebSocketAcceptsBinaryFrame(t *testing.T) {
 		t.Fatalf("conn.Close returned error: %v", err)
 	}
 
-	segments := waitForLogSegments(t, db, "channel-1", now.Add(-time.Second), now.Add(time.Second))
+	segments := waitForLogSegmentsWithStatus(t, db, "channel-1", now.Add(-time.Second), now.Add(time.Second), storage.LogSegmentStatusClosed)
 	if len(segments) != 1 {
 		t.Fatalf("len(segments) = %d, want 1", len(segments))
 	}
@@ -78,6 +81,7 @@ func TestLogWebSocketRegistersActiveSegmentBeforeClose(t *testing.T) {
 		t.Fatalf("Open returned error: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+	upsertLogTestChannel(t, db, "channel-1")
 
 	logDir := filepath.Join(root, "logs")
 	srv := server.New(server.ServerConfig{DB: db, LogDir: logDir})
@@ -88,7 +92,6 @@ func TestLogWebSocketRegistersActiveSegmentBeforeClose(t *testing.T) {
 	defer cancel()
 
 	conn := dialLogWebSocket(t, ctx, httpSrv.URL)
-	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	now := time.Now().UTC()
 	encoded, err := protocol.EncodeLogFrame(protocol.LogFrame{
@@ -162,6 +165,7 @@ func TestLogWebSocketClosesRolledSegments(t *testing.T) {
 		t.Fatalf("Open returned error: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+	upsertLogTestChannel(t, db, "channel-1")
 
 	logDir := filepath.Join(root, "logs")
 	srv := server.New(server.ServerConfig{DB: db, LogDir: logDir, LogSegmentSize: 128})
@@ -216,6 +220,75 @@ func TestLogWebSocketClosesRolledSegments(t *testing.T) {
 	}
 	if segments[0].Path == segments[1].Path {
 		t.Fatalf("rolled segments used same path %q", segments[0].Path)
+	}
+	if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
+		t.Fatalf("conn.Close returned error: %v", err)
+	}
+	_ = waitForLogSegmentsWithStatus(t, db, "channel-1", now.Add(-time.Second), now.Add(3*time.Second), storage.LogSegmentStatusClosed)
+}
+
+func TestLogWebSocketIgnoresFramesAfterChannelDelete(t *testing.T) {
+	root := t.TempDir()
+	db, err := storage.Open(filepath.Join(root, "meta.db"))
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	channel := apiTestChannel("channel-1", 7001)
+	if err := db.UpsertChannel(channel); err != nil {
+		t.Fatalf("UpsertChannel returned error: %v", err)
+	}
+	logDir := filepath.Join(root, "logs")
+	srv := server.New(server.ServerConfig{DB: db, LogDir: logDir})
+	httpSrv := httptest.NewServer(srv)
+	t.Cleanup(httpSrv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	conn := dialLogWebSocket(t, ctx, httpSrv.URL)
+
+	first := time.Now().UTC()
+	if err := conn.Write(ctx, websocket.MessageBinary, encodedLogFrame(t, "channel-1", 1, first, "before delete\n")); err != nil {
+		t.Fatalf("first conn.Write returned error: %v", err)
+	}
+	segments := waitForLogSegments(t, db, "channel-1", first.Add(-time.Second), first.Add(time.Second))
+	if len(segments) != 1 {
+		t.Fatalf("len(segments) before delete = %d, want 1", len(segments))
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, httpSrv.URL+"/api/channels/channel-1", nil)
+	if err != nil {
+		t.Fatalf("NewRequest returned error: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do returned error: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE status = %s, body = %s", resp.Status, body)
+	}
+
+	second := first.Add(time.Second)
+	if err := conn.Write(ctx, websocket.MessageBinary, encodedLogFrame(t, "channel-1", 2, second, "after delete\n")); err != nil {
+		t.Fatalf("second conn.Write returned error: %v", err)
+	}
+	if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
+		t.Fatalf("conn.Close returned error: %v", err)
+	}
+
+	if _, err := db.GetChannel("channel-1"); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("GetChannel error = %v, want ErrNotFound", err)
+	}
+	segments, err = db.ListLogSegments("channel-1", first.Add(-time.Second), second.Add(time.Second))
+	if err != nil {
+		t.Fatalf("ListLogSegments returned error: %v", err)
+	}
+	if len(segments) != 0 {
+		t.Fatalf("segments after delete = %+v, want empty", segments)
 	}
 }
 
@@ -356,6 +429,41 @@ func waitForLogSegments(t *testing.T, db *storage.DB, channelID string, start, e
 	return nil
 }
 
+func waitForLogSegmentsWithStatus(t *testing.T, db *storage.DB, channelID string, start, end time.Time, status storage.LogSegmentStatus) []storage.LogSegment {
+	t.Helper()
+
+	deadline := time.Now().Add(3 * time.Second)
+	var lastSegments []storage.LogSegment
+	var lastErr error
+	for time.Now().Before(deadline) {
+		segments, err := db.ListLogSegments(channelID, start, end)
+		if err != nil {
+			lastErr = err
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		lastSegments = segments
+		if len(segments) > 0 && allLogSegmentsHaveStatus(segments, status) {
+			return segments
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if lastErr != nil {
+		t.Fatalf("ListLogSegments returned error: %v", lastErr)
+	}
+	t.Fatalf("timeout waiting for log segment status %q, last segments = %+v", status, lastSegments)
+	return nil
+}
+
+func allLogSegmentsHaveStatus(segments []storage.LogSegment, status storage.LogSegmentStatus) bool {
+	for _, segment := range segments {
+		if segment.Status != status {
+			return false
+		}
+	}
+	return true
+}
+
 func dialLogWebSocket(t *testing.T, ctx context.Context, serverURL string) *websocket.Conn {
 	t.Helper()
 
@@ -365,6 +473,14 @@ func dialLogWebSocket(t *testing.T, ctx context.Context, serverURL string) *webs
 		t.Fatalf("Dial returned error: %v", err)
 	}
 	return conn
+}
+
+func upsertLogTestChannel(t *testing.T, db *storage.DB, channelID string) {
+	t.Helper()
+	channel := apiTestChannel(channelID, 7001)
+	if err := db.UpsertChannel(channel); err != nil {
+		t.Fatalf("UpsertChannel returned error: %v", err)
+	}
 }
 
 func encodedLogFrameForChannel(t *testing.T, channelID string) []byte {
@@ -377,6 +493,23 @@ func encodedLogFrameForChannel(t *testing.T, channelID string) []byte {
 		Direction:   protocol.DirectionRX,
 		Flags:       protocol.FlagRaw,
 		Payload:     []byte("boot\n"),
+	})
+	if err != nil {
+		t.Fatalf("EncodeLogFrame returned error: %v", err)
+	}
+	return encoded
+}
+
+func encodedLogFrame(t *testing.T, channelID string, seq uint64, timestamp time.Time, payload string) []byte {
+	t.Helper()
+
+	encoded, err := protocol.EncodeLogFrame(protocol.LogFrame{
+		ChannelID:   channelID,
+		Seq:         seq,
+		TimestampNS: timestamp.UnixNano(),
+		Direction:   protocol.DirectionRX,
+		Flags:       protocol.FlagRaw,
+		Payload:     []byte(payload),
 	})
 	if err != nil {
 		t.Fatalf("EncodeLogFrame returned error: %v", err)
