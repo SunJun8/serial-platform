@@ -87,11 +87,21 @@ export function ChannelsPage({
     setDeleteState({ busy: true, error: null, message: null });
     try {
       await deleteNoContent(`/api/channels/${encodeURIComponent(channel.ID)}`);
-      setDeleteTarget(null);
-      setDeleteState({ busy: false, error: null, message: t('channelDeleted') });
-      await onRefresh();
     } catch (err) {
       setDeleteState({ busy: false, error: errorMessage(err), message: null });
+      return;
+    }
+
+    try {
+      await onRefresh();
+      setDeleteTarget(null);
+      setDeleteState({ busy: false, error: null, message: t('channelDeleted') });
+    } catch (err) {
+      setDeleteState({
+        busy: false,
+        error: `${t('channelDeletedRefreshFailed')} ${errorMessage(err)}`,
+        message: null
+      });
     }
   }
 
@@ -149,6 +159,7 @@ export function ChannelsPage({
                         <button
                           type="button"
                           className="danger subtle"
+                          disabled={deleteState.busy}
                           onClick={() => {
                             setDeleteTarget(channel);
                             setDeleteState(emptyRequest);
@@ -165,7 +176,7 @@ export function ChannelsPage({
             </table>
           </div>
           {deleteTarget ? (
-            <div className="danger-confirm" role="alertdialog" aria-modal="true" aria-labelledby="delete-channel-title">
+            <div className="danger-confirm" role="alertdialog" aria-labelledby="delete-channel-title">
               <h3 id="delete-channel-title">{deleteTarget.Alias || deleteTarget.AutoName}</h3>
               <p>{t('deleteChannelConfirm')}</p>
               <FormFeedback state={deleteState} />
