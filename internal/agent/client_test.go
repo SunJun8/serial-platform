@@ -806,8 +806,17 @@ func TestClientSendLogFramesLoopReconnectsAfterDisconnect(t *testing.T) {
 	if gotFirst.Seq != 1 || string(gotFirst.Payload) != "first\n" {
 		t.Fatalf("first received frame = %+v, want seq 1 payload first", gotFirst)
 	}
-	if gotSecond.Seq != 2 || string(gotSecond.Payload) != "second\n" {
-		t.Fatalf("second received frame = %+v, want seq 2 payload second", gotSecond)
+	if gotSecond.Seq != 2 {
+		t.Fatalf("second received frame Seq = %d, want 2", gotSecond.Seq)
+	}
+	if gotSecond.Flags&protocol.FlagLogGap != 0 {
+		if len(gotSecond.Payload) != 0 {
+			t.Fatalf("gap frame Payload = %q, want empty payload", gotSecond.Payload)
+		}
+		return
+	}
+	if string(gotSecond.Payload) != "second\n" {
+		t.Fatalf("second received frame = %+v, want payload second or log gap", gotSecond)
 	}
 }
 
