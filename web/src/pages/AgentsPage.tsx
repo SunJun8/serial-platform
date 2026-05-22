@@ -2,6 +2,7 @@ import { Monitor, PlugZap } from 'lucide-react';
 import { Badge } from '../components/Badge';
 import { EmptyRow } from '../components/EmptyRow';
 import { ViewTitle } from '../components/ViewTitle';
+import { useI18n } from '../i18n-context';
 import type { Agent, Channel } from '../types';
 
 export function AgentsPage({
@@ -17,30 +18,32 @@ export function AgentsPage({
   busyAgentID: string | null;
   onApproveAgent: (agentID: string) => void;
 }) {
+  const { t } = useI18n();
+
   return (
     <section className="view">
-      <ViewTitle icon={Monitor} title="Agents" action="Approve / Rename" />
+      <ViewTitle icon={Monitor} title={t('agentsTitle')} action={t('agentsAction')} />
       <div className="split-layout">
         <div className="panel">
           <div className="panel-head">
-            <h2>Agent inventory</h2>
-            <span>{loading ? 'Loading' : `${agents.length} agents`}</span>
+            <h2>{t('agentInventory')}</h2>
+            <span>{loading ? t('loading') : `${agents.length} ${t('agentsCount')}`}</span>
           </div>
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Name</th>
-                  <th>Status</th>
-                  <th>Agent</th>
-                  <th>OS / Arch</th>
-                  <th>Updated</th>
+                  <th>{t('name')}</th>
+                  <th>{t('status')}</th>
+                  <th>{t('agent')}</th>
+                  <th>{t('osArch')}</th>
+                  <th>{t('updated')}</th>
                   <th />
                 </tr>
               </thead>
               <tbody>
                 {agents.length === 0 ? (
-                  <EmptyRow colSpan={6} label="No agents registered" />
+                  <EmptyRow colSpan={6} label={t('noAgentsRegistered')} />
                 ) : (
                   agents.map((agent) => (
                     <tr key={agent.ID}>
@@ -62,7 +65,7 @@ export function AgentsPage({
                           disabled={agent.Status === 'active' || busyAgentID === agent.ID}
                           onClick={() => onApproveAgent(agent.ID)}
                         >
-                          {agent.Status === 'active' ? 'Active' : busyAgentID === agent.ID ? 'Saving' : 'Approve'}
+                          {agent.Status === 'active' ? t('active') : busyAgentID === agent.ID ? t('saving') : t('approve')}
                         </button>
                       </td>
                     </tr>
@@ -74,12 +77,12 @@ export function AgentsPage({
         </div>
         <div className="panel">
           <div className="panel-head">
-            <h2>USB topology</h2>
-            <span>{channels.length} tty devices</span>
+            <h2>{t('usbTopology')}</h2>
+            <span>{channels.length} {t('ttyDevices')}</span>
           </div>
           <div className="topology-list">
             {channels.length === 0 ? (
-              <div className="empty-state">No tty devices reported yet</div>
+              <div className="empty-state">{t('noTtyDevices')}</div>
             ) : (
               channels.slice(0, 8).map((channel) => (
                 <div className="topology-row" key={channel.ID}>

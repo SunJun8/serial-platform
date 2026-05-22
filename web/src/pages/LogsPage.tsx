@@ -3,9 +3,11 @@ import { Download, HardDrive } from 'lucide-react';
 import { downloadURL } from '../api';
 import { Quota } from '../components/Quota';
 import { ViewTitle } from '../components/ViewTitle';
+import { useI18n } from '../i18n-context';
 import type { Channel } from '../types';
 
 export function LogsPage({ channels }: { channels: Channel[] }) {
+  const { t } = useI18n();
   const [channelID, setChannelID] = useState(channels[0]?.ID ?? '');
   const [direction, setDirection] = useState('both');
   const [from, setFrom] = useState('');
@@ -43,18 +45,18 @@ export function LogsPage({ channels }: { channels: Channel[] }) {
 
   return (
     <section className="view">
-      <ViewTitle icon={HardDrive} title="Logs" action="Download range" />
+      <ViewTitle icon={HardDrive} title={t('logsTitle')} action={t('logsAction')} />
       <div className="panel">
         <div className="panel-head">
-          <h2>Export log frames</h2>
+          <h2>{t('exportLogFrames')}</h2>
           <Download size={16} aria-hidden="true" />
         </div>
         <form>
           <div className="log-export-form">
             <label className="field compact-field">
-              <span>Channel</span>
+              <span>{t('channel')}</span>
               <select value={activeChannelID} onChange={(event) => setChannelID(event.target.value)}>
-                {channels.length === 0 ? <option value="">No channels</option> : null}
+                {channels.length === 0 ? <option value="">{t('noChannels')}</option> : null}
                 {channels.map((channel) => (
                   <option key={channel.ID} value={channel.ID}>
                     {channel.Alias || channel.AutoName}
@@ -63,31 +65,31 @@ export function LogsPage({ channels }: { channels: Channel[] }) {
               </select>
             </label>
             <label className="field compact-field">
-              <span>Direction</span>
+              <span>{t('direction')}</span>
               <select value={direction} onChange={(event) => setDirection(event.target.value)}>
-                <option value="both">RX+TX</option>
-                <option value="rx">RX only</option>
-                <option value="tx">TX only</option>
+                <option value="both">{t('rxTx')}</option>
+                <option value="rx">{t('rxOnly')}</option>
+                <option value="tx">{t('txOnly')}</option>
               </select>
             </label>
             <label className="field compact-field">
-              <span>From</span>
+              <span>{t('from')}</span>
               <input type="datetime-local" value={from} onChange={(event) => setFrom(event.target.value)} />
             </label>
             <label className="field compact-field">
-              <span>To</span>
+              <span>{t('to')}</span>
               <input type="datetime-local" value={to} onChange={(event) => setTo(event.target.value)} />
             </label>
             <label className="field compact-field">
-              <span>Format</span>
+              <span>{t('format')}</span>
               <select value={format} onChange={(event) => setFormat(event.target.value)}>
-                <option value="text">Text</option>
-                <option value="raw">Raw</option>
+                <option value="text">{t('text')}</option>
+                <option value="raw">{t('raw')}</option>
               </select>
             </label>
             <label className="toggle">
               <input type="checkbox" checked={timestamp} onChange={(event) => setTimestamp(event.target.checked)} />
-              Timestamp
+              {t('timestamp')}
             </label>
             <label className="toggle">
               <input
@@ -95,25 +97,25 @@ export function LogsPage({ channels }: { channels: Channel[] }) {
                 checked={directionLabel}
                 onChange={(event) => setDirectionLabel(event.target.checked)}
               />
-              Direction label
+              {t('directionLabel')}
             </label>
             <label className="toggle">
               <input type="checkbox" checked={stripANSI} onChange={(event) => setStripANSI(event.target.checked)} />
-              Strip ANSI
+              {t('stripANSI')}
             </label>
           </div>
           <div className="form-actions">
             <a className={activeChannelID ? 'button-link' : 'button-link disabled'} download href={href}>
               <Download size={15} aria-hidden="true" />
-              Download
+              {t('download')}
             </a>
           </div>
         </form>
       </div>
       <div className="quota-grid flat">
-        <Quota label="Global storage" value="0 B" limit="not configured" />
-        <Quota label="Channel quota" value="0 B" limit="default" />
-        <Quota label="Retention" value="0 days" limit="pending policy" />
+        <Quota label={t('globalStorage')} value="0 B" limit={t('notConfigured')} />
+        <Quota label={t('channelQuota')} value="0 B" limit={t('defaultPolicy')} />
+        <Quota label={t('retention')} value="0 days" limit={t('pendingPolicy')} />
       </div>
     </section>
   );

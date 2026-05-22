@@ -2,11 +2,13 @@ import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { Power, Send, TerminalSquare, Unplug } from 'lucide-react';
 import { wsURL } from '../api';
 import { ViewTitle } from '../components/ViewTitle';
+import { useI18n } from '../i18n-context';
 import { appendLiveLogFrame, emptyLiveLogBuffer, liveLogLines } from '../live-log-buffer';
 import { useTerminalSession } from '../terminal-session';
 import type { Channel, LiveLogFrame } from '../types';
 
 export function TerminalPage({ channels }: { channels: Channel[] }) {
+  const { t } = useI18n();
   const session = useTerminalSession();
   const [logBuffer, setLogBuffer] = useState(() => emptyLiveLogBuffer());
   const [input, setInput] = useState('');
@@ -71,16 +73,16 @@ export function TerminalPage({ channels }: { channels: Channel[] }) {
 
   return (
     <section className="view terminal-view">
-      <ViewTitle icon={TerminalSquare} title="Terminal" action="Connect to control" />
+      <ViewTitle icon={TerminalSquare} title={t('terminalTitle')} action={t('terminalAction')} />
       <div className="terminal-layout">
         <div className="panel terminal-panel">
           <div className="panel-head">
-            <h2>{selectedChannel ? selectedChannel.Alias || selectedChannel.AutoName : 'No channel selected'}</h2>
-            <span>RX/TX from live log WS</span>
+            <h2>{selectedChannel ? selectedChannel.Alias || selectedChannel.AutoName : t('noChannelSelected')}</h2>
+            <span>{t('liveLogSource')}</span>
           </div>
-          <div className="terminal-output" aria-label="Live serial log" ref={outputRef}>
+          <div className="terminal-output" aria-label={t('liveSerialLog')} ref={outputRef}>
             {logLines.length === 0 ? (
-              <div className="terminal-empty">Waiting for live frames</div>
+              <div className="terminal-empty">{t('waitingForLiveFrames')}</div>
             ) : (
               logLines.map((line) => (
                 <div className="log-line" key={line.id}>
@@ -96,28 +98,28 @@ export function TerminalPage({ channels }: { channels: Channel[] }) {
             <input
               value={input}
               onChange={(event) => setInput(event.target.value)}
-              placeholder={session.connected ? 'Type command' : 'Connect before sending'}
+              placeholder={session.connected ? t('typeCommand') : t('connectBeforeSending')}
               disabled={!session.connected}
             />
             <button type="submit" disabled={!session.connected || session.pendingCount > 0}>
               <Send size={15} aria-hidden="true" />
-              Send
+              {t('send')}
             </button>
           </form>
         </div>
         <div className="panel narrow controls">
           <div className="panel-head">
-            <h2>Control</h2>
-            <span>{session.pendingCount > 0 ? `${session.pendingCount} pending` : session.status}</span>
+            <h2>{t('control')}</h2>
+            <span>{session.pendingCount > 0 ? `${session.pendingCount} ${t('pendingRequests')}` : session.status}</span>
           </div>
           <label className="field">
-            <span>Channel</span>
+            <span>{t('channel')}</span>
             <select
               value={selectedChannelID}
               onChange={(event) => session.selectChannel(event.target.value)}
               disabled={session.status === 'connecting'}
             >
-              {channels.length === 0 ? <option value="">No channels</option> : null}
+              {channels.length === 0 ? <option value="">{t('noChannels')}</option> : null}
               {channels.map((channel) => (
                 <option key={channel.ID} value={channel.ID}>
                   {channel.Alias || channel.AutoName}
@@ -132,11 +134,11 @@ export function TerminalPage({ channels }: { channels: Channel[] }) {
               disabled={!selectedChannelID || session.connected || session.status === 'connecting'}
             >
               <Power size={15} aria-hidden="true" />
-              {session.status === 'connecting' ? 'Connecting' : 'Connect'}
+              {session.status === 'connecting' ? t('connecting') : t('connect')}
             </button>
             <button type="button" onClick={session.disconnect} disabled={!session.connected}>
               <Unplug size={15} aria-hidden="true" />
-              Disconnect
+              {t('disconnect')}
             </button>
           </div>
           <label className="toggle">
@@ -158,12 +160,12 @@ export function TerminalPage({ channels }: { channels: Channel[] }) {
             RTS
           </label>
           <label className="field">
-            <span>Baudrate</span>
+            <span>{t('baudrate')}</span>
             <input value={session.baud} type="number" min="1" onChange={(event) => session.setBaud(event.target.value)} />
           </label>
           <div className="connect-row">
             <button type="button" onClick={session.applySerialConfig} disabled={!session.connected || session.pendingCount > 0}>
-              Apply
+              {t('apply')}
             </button>
             <button
               type="button"
@@ -171,7 +173,7 @@ export function TerminalPage({ channels }: { channels: Channel[] }) {
               onClick={() => session.sendBreak(250)}
               disabled={!session.connected || session.pendingCount > 0}
             >
-              Break
+              {t('breakSignal')}
             </button>
           </div>
           {session.error ? <div className="inline-error">{session.error}</div> : null}

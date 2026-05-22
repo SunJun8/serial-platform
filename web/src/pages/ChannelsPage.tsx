@@ -1,10 +1,11 @@
 import { type FormEvent, useEffect, useState } from 'react';
-import { Cable, Plug } from 'lucide-react';
-import { postJSON } from '../api';
+import { Cable, Plug, Trash2 } from 'lucide-react';
+import { deleteNoContent, postJSON } from '../api';
 import { Badge } from '../components/Badge';
 import { EmptyRow } from '../components/EmptyRow';
 import { FormFeedback } from '../components/FormFeedback';
 import { ViewTitle } from '../components/ViewTitle';
+import { useI18n } from '../i18n-context';
 import type { Agent, Channel, ChannelPayload, RequestState } from '../types';
 
 const emptyRequest: RequestState = { busy: false, error: null, message: null };
@@ -24,9 +25,12 @@ export function ChannelsPage({
   query: string;
   onRefresh: () => Promise<void>;
 }) {
+  const { t } = useI18n();
   const [form, setForm] = useState(() => defaultManualForm(allChannels, agents));
   const [manualState, setManualState] = useState<RequestState>(emptyRequest);
   const [statusBusyID, setStatusBusyID] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Channel | null>(null);
+  const [deleteState, setDeleteState] = useState<RequestState>(emptyRequest);
 
   useEffect(() => {
     setForm((current) => ({
@@ -60,7 +64,7 @@ export function ChannelsPage({
         agentID: form.agentID,
         baud: form.baud
       });
-      setManualState({ busy: false, error: null, message: 'Manual channel added' });
+      setManualState({ busy: false, error: null, message: t('manualChannelAdded') });
     } catch (err) {
       setManualState({ busy: false, error: errorMessage(err), message: null });
     }
@@ -79,31 +83,43 @@ export function ChannelsPage({
     }
   }
 
+  async function deleteChannel(channel: Channel) {
+    setDeleteState({ busy: true, error: null, message: null });
+    try {
+      await deleteNoContent(`/api/channels/${encodeURIComponent(channel.ID)}`);
+      setDeleteTarget(null);
+      setDeleteState({ busy: false, error: null, message: t('channelDeleted') });
+      await onRefresh();
+    } catch (err) {
+      setDeleteState({ busy: false, error: errorMessage(err), message: null });
+    }
+  }
+
   return (
     <section className="view">
-      <ViewTitle icon={Cable} title="Channels" action="Manual fallback" />
+      <ViewTitle icon={Cable} title={t('channelsTitle')} action={t('channelsAction')} />
       <div className="channels-layout">
         <div className="panel">
           <div className="panel-head">
-            <h2>Serial channels</h2>
-            <span>{loading ? 'Loading' : `${channels.length} shown${query ? ' after filter' : ''}`}</span>
+            <h2>{t('serialChannels')}</h2>
+            <span>{loading ? t('loading') : `${channels.length} ${t('shown')}${query ? ` ${t('afterFilter')}` : ''}`}</span>
           </div>
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Alias</th>
-                  <th>Status</th>
-                  <th>Role</th>
-                  <th>RFC2217</th>
-                  <th>Defaults</th>
-                  <th>Device</th>
+                  <th>{t('alias')}</th>
+                  <th>{t('status')}</th>
+                  <th>{t('role')}</th>
+                  <th>{t('rfc2217')}</th>
+                  <th>{t('defaults')}</th>
+                  <th>{t('device')}</th>
                   <th />
                 </tr>
               </thead>
               <tbody>
                 {channels.length === 0 ? (
-                  <EmptyRow colSpan={7} label="No channels match the current filter" />
+                  <EmptyRow colSpan={7} label={t('noChannelsMatch')} />
                 ) : (
                   channels.map((channel) => (
                     <tr key={channel.ID}>
@@ -114,7 +130,7 @@ export function ChannelsPage({
                       <td>
                         <Badge value={channel.Status} />
                       </td>
-                      <td>{channel.Role || 'console'}</td>
+                      <td>{channel.Role || t('console')}</td>
                       <td>:{channel.RFC2217Port || '-'}</td>
                       <td>
                         {channel.DefaultBaud || 115200} {channel.DefaultDataBits || 8}
@@ -128,7 +144,18 @@ export function ChannelsPage({
                           disabled={statusBusyID === channel.ID}
                           onClick={() => void setChannelEnabled(channel, channel.Status === 'disabled')}
                         >
-                          {channel.Status === 'disabled' ? 'Enable' : 'Disable'}
+                          {channel.Status === 'disabled' ? t('enable') : t('disable')}
+                        </button>
+                        <button
+                          type="button"
+                          className="danger subtle"
+                          onClick={() => {
+                            setDeleteTarget(channel);
+                            setDeleteState(emptyRequest);
+                          }}
+                        >
+                          <Trash2 size={14} aria-hidden="true" />
+                          {t('deleteChannel')}
                         </button>
                       </td>
                     </tr>
@@ -137,21 +164,42 @@ export function ChannelsPage({
               </tbody>
             </table>
           </div>
+          {deleteTarget ? (
+            <div className="danger-confirm" role="alertdialog" aria-modal="true" aria-labelledby="delete-channel-title">
+              <h3 id="delete-channel-title">{deleteTarget.Alias || deleteTarget.AutoName}</h3>
+              <p>{t('deleteChannelConfirm')}</p>
+              <FormFeedback state={deleteState} />
+              <div className="connect-row">
+                <button type="button" onClick={() => setDeleteTarget(null)} disabled={deleteState.busy}>
+                  {t('cancel')}
+                </button>
+                <button
+                  type="button"
+                  className="danger"
+                  onClick={() => void deleteChannel(deleteTarget)}
+                  disabled={deleteState.busy}
+                >
+                  {deleteState.busy ? t('deleting') : t('confirmDelete')}
+                </button>
+              </div>
+            </div>
+          ) : null}
+          {deleteTarget ? null : <FormFeedback state={deleteState} />}
         </div>
         <div className="panel narrow">
           <div className="panel-head">
-            <h2>Manual channel</h2>
-            <span>secondary path</span>
+            <h2>{t('manualChannel')}</h2>
+            <span>{t('secondaryPath')}</span>
           </div>
           <form className="dense-form" onSubmit={(event) => void createManualChannel(event)}>
             <label className="field">
-              <span>Agent</span>
+              <span>{t('agent')}</span>
               <select
                 value={form.agentID}
                 onChange={(event) => setForm((current) => ({ ...current, agentID: event.target.value }))}
                 required
               >
-                {agents.length === 0 ? <option value="">No agents</option> : null}
+                {agents.length === 0 ? <option value="">{t('noAgents')}</option> : null}
                 {agents.map((agent) => (
                   <option key={agent.ID} value={agent.ID}>
                     {agent.Name || agent.Hostname || agent.ID}
@@ -160,7 +208,7 @@ export function ChannelsPage({
               </select>
             </label>
             <label className="field">
-              <span>Alias</span>
+              <span>{t('alias')}</span>
               <input
                 value={form.alias}
                 onChange={(event) => setForm((current) => ({ ...current, alias: event.target.value }))}
@@ -169,7 +217,7 @@ export function ChannelsPage({
               />
             </label>
             <label className="field">
-              <span>ID path</span>
+              <span>{t('idPath')}</span>
               <input
                 value={form.idPath}
                 onChange={(event) => setForm((current) => ({ ...current, idPath: event.target.value }))}
@@ -177,7 +225,7 @@ export function ChannelsPage({
               />
             </label>
             <label className="field">
-              <span>ID path tag</span>
+              <span>{t('idPathTag')}</span>
               <input
                 value={form.idPathTag}
                 onChange={(event) => setForm((current) => ({ ...current, idPathTag: event.target.value }))}
@@ -185,7 +233,7 @@ export function ChannelsPage({
               />
             </label>
             <label className="field">
-              <span>RFC2217 port</span>
+              <span>{t('rfc2217Port')}</span>
               <input
                 value={form.port}
                 type="number"
@@ -196,7 +244,7 @@ export function ChannelsPage({
               />
             </label>
             <label className="field">
-              <span>Baud</span>
+              <span>{t('baud')}</span>
               <input
                 value={form.baud}
                 type="number"
@@ -209,7 +257,7 @@ export function ChannelsPage({
             <div className="form-actions">
               <button type="submit" disabled={manualState.busy || agents.length === 0}>
                 <Plug size={15} aria-hidden="true" />
-                {manualState.busy ? 'Adding' : 'Add channel'}
+                {manualState.busy ? t('adding') : t('addChannel')}
               </button>
             </div>
           </form>

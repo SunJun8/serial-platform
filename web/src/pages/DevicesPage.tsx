@@ -4,6 +4,7 @@ import { getJSON, postJSON } from '../api';
 import { EmptyRow } from '../components/EmptyRow';
 import { FormFeedback } from '../components/FormFeedback';
 import { ViewTitle } from '../components/ViewTitle';
+import { useI18n } from '../i18n-context';
 import type { Agent, Candidate, Channel, RequestState } from '../types';
 
 const emptyRequest: RequestState = { busy: false, error: null, message: null };
@@ -17,6 +18,7 @@ export function DevicesPage({
   channels: Channel[];
   onRefresh: () => Promise<void>;
 }) {
+  const { t } = useI18n();
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [selectedID, setSelectedID] = useState('');
   const [loading, setLoading] = useState(true);
@@ -73,7 +75,7 @@ export function DevicesPage({
         payload
       );
       await Promise.all([refreshCandidates(), onRefresh()]);
-      setState({ busy: false, error: null, message: 'Candidate confirmed' });
+      setState({ busy: false, error: null, message: t('candidateConfirmed') });
     } catch (err) {
       setState({ busy: false, error: errorMessage(err), message: null });
     }
@@ -81,27 +83,27 @@ export function DevicesPage({
 
   return (
     <section className="view">
-      <ViewTitle icon={PlugZap} title="Devices" action="Create channel" />
+      <ViewTitle icon={PlugZap} title={t('devicesTitle')} action={t('devicesAction')} />
       <div className="workflow">
         <div className="panel">
           <div className="panel-head">
-            <h2>Discovered candidates</h2>
-            <span>{loading ? 'Loading' : `${candidates.length} pending`}</span>
+            <h2>{t('discoveredCandidates')}</h2>
+            <span>{loading ? t('loading') : `${candidates.length} ${t('pending')}`}</span>
           </div>
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Device</th>
-                  <th>Agent</th>
-                  <th>VID/PID</th>
-                  <th>Driver</th>
-                  <th>Last seen</th>
+                  <th>{t('device')}</th>
+                  <th>{t('agent')}</th>
+                  <th>{t('vidPid')}</th>
+                  <th>{t('driver')}</th>
+                  <th>{t('lastSeen')}</th>
                 </tr>
               </thead>
               <tbody>
                 {candidates.length === 0 ? (
-                  <EmptyRow colSpan={5} label="No pending candidates" />
+                  <EmptyRow colSpan={5} label={t('noPendingCandidates')} />
                 ) : (
                   candidates.map((candidate) => {
                     const agent = agentByID.get(candidate.AgentID);
@@ -140,12 +142,12 @@ export function DevicesPage({
         </div>
         <div className="panel narrow">
           <div className="panel-head">
-            <h2>Confirm channel</h2>
-            <span>{selectedCandidate ? selectedCandidate.DevName : 'No selection'}</span>
+            <h2>{t('confirmChannel')}</h2>
+            <span>{selectedCandidate ? selectedCandidate.DevName : t('noSelection')}</span>
           </div>
           <form className="dense-form" onSubmit={(event) => void confirmCandidate(event)}>
             <label className="field">
-              <span>Alias</span>
+              <span>{t('alias')}</span>
               <input
                 value={form.alias}
                 onChange={(event) => setForm((current) => ({ ...current, alias: event.target.value }))}
@@ -153,7 +155,7 @@ export function DevicesPage({
               />
             </label>
             <label className="field">
-              <span>Role</span>
+              <span>{t('role')}</span>
               <input
                 value={form.role}
                 onChange={(event) => setForm((current) => ({ ...current, role: event.target.value }))}
@@ -161,7 +163,7 @@ export function DevicesPage({
               />
             </label>
             <label className="field">
-              <span>RFC2217 port</span>
+              <span>{t('rfc2217Port')}</span>
               <input
                 value={form.port}
                 type="number"
@@ -172,7 +174,7 @@ export function DevicesPage({
               />
             </label>
             <label className="field">
-              <span>Baud</span>
+              <span>{t('baud')}</span>
               <input
                 value={form.baud}
                 type="number"
@@ -186,11 +188,11 @@ export function DevicesPage({
             <div className="form-actions">
               <button type="button" onClick={() => void refreshCandidates()} disabled={loading || state.busy}>
                 <RefreshCw size={15} aria-hidden="true" />
-                Refresh
+                {t('refresh')}
               </button>
               <button type="submit" disabled={!selectedCandidate || state.busy}>
                 <PlugZap size={15} aria-hidden="true" />
-                {state.busy ? 'Confirming' : 'Confirm'}
+                {state.busy ? t('confirming') : t('confirm')}
               </button>
             </div>
           </form>
