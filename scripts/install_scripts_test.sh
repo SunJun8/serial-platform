@@ -30,14 +30,17 @@ assert_not_contains() {
 install_central="${ROOT_DIR}/scripts/install-central.sh"
 install_agent="${ROOT_DIR}/scripts/install-agent.sh"
 build_release="${ROOT_DIR}/scripts/build-release.sh"
+workflows_test="${ROOT_DIR}/scripts/workflows_test.sh"
 
 assert_file "${install_central}"
 assert_file "${install_agent}"
 assert_file "${build_release}"
+assert_file "${workflows_test}"
 
 bash -n "${install_central}"
 bash -n "${install_agent}"
 bash -n "${build_release}"
+bash -n "${workflows_test}"
 
 assert_contains "${install_central}" "systemctl daemon-reload"
 assert_contains "${install_central}" "systemctl enable --now serial-platform-central.service"
@@ -78,5 +81,7 @@ assert_contains "${build_release}" ".release-build"
 assert_contains "${build_release}" "serial-platform-linux.tar.gz"
 assert_contains "${build_release}" "SOURCE_DATE_EPOCH"
 assert_contains "${build_release}" "gzip -n"
+
+bash "${workflows_test}"
 
 echo "install script smoke tests passed"
