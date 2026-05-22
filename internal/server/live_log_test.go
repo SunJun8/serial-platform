@@ -3,6 +3,7 @@ package server_test
 import (
 	"context"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -144,7 +145,13 @@ func TestLogWebSocketPublishesToLiveLogSubscribers(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	upsertLogTestChannel(t, db, "channel-1")
 
-	srv := server.New(server.ServerConfig{DB: db, LogDir: filepath.Join(root, "logs")})
+	logDir, err := os.MkdirTemp("", "serial-platform-live-log-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(logDir) })
+
+	srv := server.New(server.ServerConfig{DB: db, LogDir: logDir})
 	httpSrv := httptest.NewServer(srv)
 	t.Cleanup(httpSrv.Close)
 
@@ -155,7 +162,7 @@ func TestLogWebSocketPublishesToLiveLogSubscribers(t *testing.T) {
 	defer liveConn.CloseNow()
 
 	logConn := dialLogWebSocket(t, ctx, httpSrv.URL)
-	defer logConn.Close(websocket.StatusNormalClosure, "")
+	defer logConn.CloseNow()
 
 	encoded, err := protocol.EncodeLogFrame(protocol.LogFrame{
 		ChannelID:   "channel-1",
@@ -169,25 +176,19 @@ func TestLogWebSocketPublishesToLiveLogSubscribers(t *testing.T) {
 		t.Fatalf("EncodeLogFrame returned error: %v", err)
 	}
 
-	for {
-		if err := logConn.Write(ctx, websocket.MessageBinary, encoded); err != nil {
-			t.Fatalf("logConn.Write returned error: %v", err)
-		}
+	if err := logConn.Write(ctx, websocket.MessageBinary, encoded); err != nil {
+		t.Fatalf("logConn.Write returned error: %v", err)
+	}
 
-		readCtx, readCancel := context.WithTimeout(ctx, 25*time.Millisecond)
-		var got protocol.LiveLogFrame
-		err := protocol.ReadJSON(readCtx, liveConn, &got)
-		readCancel()
-		if err != nil {
-			if ctx.Err() != nil {
-				t.Fatalf("protocol.ReadJSON timed out waiting for live log publish: %v", err)
-			}
-			continue
-		}
-		if got.ChannelID != "channel-1" || got.Seq != 9 || got.Payload != "ZnJvbSB1cGxvYWRlcg==" {
-			t.Fatalf("live log frame = %+v, want uploaded channel-1 seq 9", got)
-		}
-		return
+	var got protocol.LiveLogFrame
+	if err := protocol.ReadJSON(ctx, liveConn, &got); err != nil {
+		t.Fatalf("protocol.ReadJSON returned error: %v", err)
+	}
+	if got.ChannelID != "channel-1" || got.Seq != 9 || got.Payload != "ZnJvbSB1cGxvYWRlcg==" {
+		t.Fatalf("live log frame = %+v, want uploaded channel-1 seq 9", got)
+	}
+	if err := logConn.Close(websocket.StatusNormalClosure, ""); err != nil {
+		t.Fatalf("logConn.Close returned error: %v", err)
 	}
 }
 
