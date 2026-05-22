@@ -31,6 +31,7 @@ export function ChannelsPage({
   const [statusBusyID, setStatusBusyID] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Channel | null>(null);
   const [deleteState, setDeleteState] = useState<RequestState>(emptyRequest);
+  const [deletedChannelID, setDeletedChannelID] = useState<string | null>(null);
 
   useEffect(() => {
     setForm((current) => ({
@@ -71,6 +72,9 @@ export function ChannelsPage({
   }
 
   async function setChannelEnabled(channel: Channel, enabled: boolean) {
+    if (channel.ID === deletedChannelID) {
+      return;
+    }
     setStatusBusyID(channel.ID);
     setManualState((current) => ({ ...current, error: null, message: null }));
     try {
@@ -84,9 +88,13 @@ export function ChannelsPage({
   }
 
   async function deleteChannel(channel: Channel) {
+    if (channel.ID === deletedChannelID) {
+      return;
+    }
     setDeleteState({ busy: true, error: null, message: null });
     try {
       await deleteNoContent(`/api/channels/${encodeURIComponent(channel.ID)}`);
+      setDeletedChannelID(channel.ID);
     } catch (err) {
       setDeleteState({ busy: false, error: errorMessage(err), message: null });
       return;
@@ -131,52 +139,55 @@ export function ChannelsPage({
                 {channels.length === 0 ? (
                   <EmptyRow colSpan={7} label={t('noChannelsMatch')} />
                 ) : (
-                  channels.map((channel) => (
-                    <tr key={channel.ID}>
-                      <td>
-                        <strong>{channel.Alias || channel.AutoName}</strong>
-                        <small>{channel.AutoName}</small>
-                      </td>
-                      <td>
-                        <Badge value={channel.Status} />
-                      </td>
-                      <td>{channel.Role || t('console')}</td>
-                      <td>:{channel.RFC2217Port || '-'}</td>
-                      <td>
-                        {channel.DefaultBaud || 115200} {channel.DefaultDataBits || 8}
-                        {channel.DefaultParity || 'N'}
-                        {channel.DefaultStopBits || 1} {channel.DefaultFlow || 'none'}
-                      </td>
-                      <td className="mono-cell">{channel.IDPathTag || channel.IDPath || channel.DevName || '-'}</td>
-                      <td className="row-actions">
-                        <button
-                          type="button"
-                          disabled={statusBusyID === channel.ID}
-                          onClick={() => void setChannelEnabled(channel, channel.Status === 'disabled')}
-                        >
-                          {channel.Status === 'disabled' ? t('enable') : t('disable')}
-                        </button>
-                        <button
-                          type="button"
-                          className="danger subtle"
-                          disabled={deleteState.busy}
-                          onClick={() => {
-                            setDeleteTarget(channel);
-                            setDeleteState(emptyRequest);
-                          }}
-                        >
-                          <Trash2 size={14} aria-hidden="true" />
-                          {t('deleteChannel')}
-                        </button>
-                      </td>
-                    </tr>
-                  ))
+                  channels.map((channel) => {
+                    const deleteSucceeded = channel.ID === deletedChannelID;
+                    return (
+                      <tr key={channel.ID}>
+                        <td>
+                          <strong>{channel.Alias || channel.AutoName}</strong>
+                          <small>{channel.AutoName}</small>
+                        </td>
+                        <td>
+                          <Badge value={channel.Status} />
+                        </td>
+                        <td>{channel.Role || t('console')}</td>
+                        <td>:{channel.RFC2217Port || '-'}</td>
+                        <td>
+                          {channel.DefaultBaud || 115200} {channel.DefaultDataBits || 8}
+                          {channel.DefaultParity || 'N'}
+                          {channel.DefaultStopBits || 1} {channel.DefaultFlow || 'none'}
+                        </td>
+                        <td className="mono-cell">{channel.IDPathTag || channel.IDPath || channel.DevName || '-'}</td>
+                        <td className="row-actions">
+                          <button
+                            type="button"
+                            disabled={deleteSucceeded || statusBusyID === channel.ID}
+                            onClick={() => void setChannelEnabled(channel, channel.Status === 'disabled')}
+                          >
+                            {channel.Status === 'disabled' ? t('enable') : t('disable')}
+                          </button>
+                          <button
+                            type="button"
+                            className="danger subtle"
+                            disabled={deleteSucceeded || deleteState.busy}
+                            onClick={() => {
+                              setDeleteTarget(channel);
+                              setDeleteState(emptyRequest);
+                            }}
+                          >
+                            <Trash2 size={14} aria-hidden="true" />
+                            {t('deleteChannel')}
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>
           </div>
           {deleteTarget ? (
-            <div className="danger-confirm" role="alertdialog" aria-labelledby="delete-channel-title">
+            <div className="danger-confirm" role="alert" aria-labelledby="delete-channel-title">
               <h3 id="delete-channel-title">{deleteTarget.Alias || deleteTarget.AutoName}</h3>
               <p>{t('deleteChannelConfirm')}</p>
               <FormFeedback state={deleteState} />
@@ -188,7 +199,7 @@ export function ChannelsPage({
                   type="button"
                   className="danger"
                   onClick={() => void deleteChannel(deleteTarget)}
-                  disabled={deleteState.busy}
+                  disabled={deleteState.busy || deleteTarget.ID === deletedChannelID}
                 >
                   {deleteState.busy ? t('deleting') : t('confirmDelete')}
                 </button>
