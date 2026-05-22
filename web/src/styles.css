@@ -345,6 +345,7 @@ small {
 
 .terminal-layout {
   grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
+  align-items: stretch;
 }
 
 .panel {
@@ -584,17 +585,20 @@ td small {
 
 .terminal-panel {
   display: grid;
-  grid-template-rows: auto minmax(320px, 1fr) auto;
+  grid-template-rows: auto minmax(360px, 1fr) auto;
+  min-height: min(720px, calc(100vh - 190px));
 }
 
 .terminal-output {
-  min-height: 320px;
-  max-height: calc(100vh - 230px);
+  height: 100%;
+  min-height: 360px;
+  max-height: none;
   overflow: auto;
   padding: 12px;
   background: #171b18;
   color: #d8e2d8;
   font-size: 13px;
+  white-space: pre-wrap;
 }
 
 .terminal-empty {
@@ -631,6 +635,7 @@ td small {
 
 .log-line code {
   overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .terminal-input {
@@ -827,6 +832,10 @@ td small {
   .terminal-input button {
     grid-column: 2;
     justify-self: end;
+  }
+
+  .terminal-output {
+    min-height: 280px;
   }
 
   .log-line {

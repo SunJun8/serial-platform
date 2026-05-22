@@ -10,6 +10,15 @@ export type RequestState = {
 
 export type RefreshState = 'idle' | 'loading' | 'success' | 'error';
 
+export type TerminalStatus = 'idle' | 'connecting' | 'connected' | 'error';
+
+export type LogDisplayLine = {
+  id: string;
+  ts: string;
+  dir: string;
+  text: string;
+};
+
 export type Agent = {
   ID: string;
   Name: string;

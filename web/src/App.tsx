@@ -10,6 +10,7 @@ import { ChannelsPage } from './pages/ChannelsPage';
 import { DevicesPage } from './pages/DevicesPage';
 import { LogsPage } from './pages/LogsPage';
 import { TerminalPage } from './pages/TerminalPage';
+import { TerminalSessionProvider } from './terminal-session';
 import type { Agent, Channel, Language, RefreshState, ViewKey } from './types';
 
 type NavItem = {
@@ -222,28 +223,30 @@ export function App() {
           </div>
         ) : null}
 
-        {activeView === 'agents' ? (
-          <AgentsPage
-            agents={agents}
-            channels={channels}
-            loading={loading}
-            busyAgentID={busyAgentID}
-            onApproveAgent={(agentID) => void approveAgent(agentID)}
-          />
-        ) : null}
-        {activeView === 'devices' ? <DevicesPage agents={agents} channels={channels} onRefresh={refresh} /> : null}
-        {activeView === 'channels' ? (
-          <ChannelsPage
-            agents={agents}
-            channels={visibleChannels}
-            allChannels={channels}
-            loading={loading}
-            query={query}
-            onRefresh={refresh}
-          />
-        ) : null}
-        {activeView === 'terminal' ? <TerminalPage channels={channels} /> : null}
-        {activeView === 'logs' ? <LogsPage channels={channels} /> : null}
+        <TerminalSessionProvider channels={channels}>
+          {activeView === 'agents' ? (
+            <AgentsPage
+              agents={agents}
+              channels={channels}
+              loading={loading}
+              busyAgentID={busyAgentID}
+              onApproveAgent={(agentID) => void approveAgent(agentID)}
+            />
+          ) : null}
+          {activeView === 'devices' ? <DevicesPage agents={agents} channels={channels} onRefresh={refresh} /> : null}
+          {activeView === 'channels' ? (
+            <ChannelsPage
+              agents={agents}
+              channels={visibleChannels}
+              allChannels={channels}
+              loading={loading}
+              query={query}
+              onRefresh={refresh}
+            />
+          ) : null}
+          {activeView === 'terminal' ? <TerminalPage channels={channels} /> : null}
+          {activeView === 'logs' ? <LogsPage channels={channels} /> : null}
+        </TerminalSessionProvider>
       </main>
     </div>
   );
