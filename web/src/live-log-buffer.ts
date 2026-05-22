@@ -45,7 +45,7 @@ export function appendLiveLogFrame(buffer: LiveLogBuffer, frame: LiveLogFrame, l
     }
     current = { ...current, text: current.text + part.text };
     if (part.endsLine) {
-      lines = pushLine(lines, current, limit);
+      lines = pushLine(lines, trimTrailingCarriageReturn(current), limit);
       current = null;
     }
   }
@@ -108,4 +108,11 @@ function lineID(frame: LiveLogFrame, dir: string, index: number) {
 
 function pushLine(lines: LogDisplayLine[], line: LogDisplayLine, limit: number) {
   return [...lines, line].slice(-limit);
+}
+
+function trimTrailingCarriageReturn(line: LogDisplayLine): LogDisplayLine {
+  if (!line.text.endsWith('\r')) {
+    return line;
+  }
+  return { ...line, text: line.text.slice(0, -1) };
 }
